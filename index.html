@@ -7,6 +7,8 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="道の駅スタンプ">
 <title>道の駅スタンプ帳</title>
+<link rel="stylesheet" href="vendor/leaflet/leaflet.css">
+<script src="vendor/leaflet/leaflet.js"></script>
 <style>
 :root {
   --bg: #f6f5f1; --surface: #ffffff; --surface2: #eeece6; --text: #1f2421; --muted: #6b716d;
@@ -158,6 +160,22 @@ nav.tabs button.on { color: var(--accent); font-weight: 700; }
 .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 .banner { background: var(--stamp-soft); color: var(--stamp); border-radius: 12px; padding: 10px 12px; font-size: 14px; margin-bottom: 10px; }
 .settings p { margin: 6px 0; font-size: 14px; }
+/* 地図。Leaflet 内部の z-index がヘッダー・タブより前に出ないよう、地図ごとに重なりを閉じ込める */
+.leaflet-container { position: relative; z-index: 0; font: inherit; background: var(--surface2); }
+.pin-map { height: 260px; border-radius: 12px; overflow: hidden; border: 1px solid var(--line); }
+.mini-map { height: 190px; border-radius: var(--radius); overflow: hidden; margin-bottom: 12px; }
+.pin-bar { display: flex; gap: 8px; margin-top: 8px; }
+.pin-bar .btn { font-size: 15px; padding: 0 10px; }
+#v-map { padding: 0; }
+.big-map { height: calc(100vh - 56px - 60px - 34px - var(--safe-t) - var(--safe-b)); height: calc(100dvh - 56px - 60px - 34px - var(--safe-t) - var(--safe-b)); }
+.map-info { height: 34px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 12px; font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; }
+.map-info .legend { flex: 0 0 auto; }
+.map-locate { width: 44px; height: 44px; font-size: 22px; background: #fff; border: 2px solid rgba(0,0,0,.2); border-radius: 8px; color: #222; }
+.leaflet-popup-content { font-size: 14px; line-height: 1.5; margin: 10px 14px; }
+.leaflet-popup-content b { font-size: 15px; }
+.here-line { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 13px; color: var(--muted); margin: -4px 2px 8px; }
+.here-line button { border: 1px solid var(--line); background: var(--surface); border-radius: 16px; height: 32px; padding: 0 12px; font-size: 13px; color: var(--accent); font-weight: 700; }
+.dist { color: var(--accent); font-weight: 700; }
 .sr-file { position: fixed; left: -1000px; top: 0; width: 1px; height: 1px; opacity: 0; }
 .chips { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 4px; scrollbar-width: none; }
 .chips::-webkit-scrollbar { display: none; }
@@ -216,10 +234,11 @@ nav.tabs button.on { color: var(--accent); font-weight: 700; }
         <option value="">スタンプ：すべて</option><option value="yes">スタンプあり</option><option value="no">スタンプなし</option>
       </select>
       <select id="fSort" aria-label="並び順">
-        <option value="reg">都道府県順</option><option value="kana">よみ順</option><option value="recent">最近の訪問順</option>
+        <option value="reg">都道府県順</option><option value="near">現在地から近い順</option><option value="kana">よみ順</option><option value="recent">最近の訪問順</option>
       </select>
     </div>
     <div class="count-line"><span id="countText"></span><span id="progressText"></span></div>
+    <div class="here-line" id="hereLine" hidden></div>
     <ul class="list" id="list"></ul>
     <button class="more" id="moreBtn" hidden>もっと表示</button>
   </section>
@@ -238,6 +257,12 @@ nav.tabs button.on { color: var(--accent); font-weight: 700; }
     <ul class="list" id="visitList"></ul>
   </section>
 
+  <!-- 地図 -->
+  <section class="view" id="v-map">
+    <div class="map-info" id="mapInfo"></div>
+    <div id="bigMap" class="big-map"></div>
+  </section>
+
   <!-- スタンプ帳 -->
   <section class="view" id="v-stamps">
     <div class="chips" id="kindChips"></div>
@@ -254,6 +279,7 @@ nav.tabs button.on { color: var(--accent); font-weight: 700; }
 
 <nav class="tabs">
   <button data-tab="list"><span class="ico">🏠</span>道の駅</button>
+  <button data-tab="map"><span class="ico">🗺️</span>地図</button>
   <button data-tab="stamps"><span class="ico">📮</span>スタンプ帳</button>
   <button data-tab="visits"><span class="ico">📝</span>訪問記録</button>
   <button data-tab="settings"><span class="ico">⚙️</span>設定</button>
@@ -264,7 +290,7 @@ nav.tabs button.on { color: var(--accent); font-weight: 700; }
 
 <script>
 'use strict';
-const APP_VERSION = '0.2.0';
+const APP_VERSION = '0.3.0';
 const APP_KEY = 'michieki-stamp';           // DB名・localStorageキーの接頭辞（github.io は他アプリと同一オリジン）
 const DATA_URL = 'data/michinoeki.json';
 // 評価項目の初期値。実際の項目は meta ストアの ratingItems（設定画面で増減・改名・並べ替え・非表示）
@@ -274,7 +300,12 @@ const STATUS_LABEL = { open: '営業中', suspended: '休止中', closed: '閉�
 const GEO_LABEL = {
   osm: 'OpenStreetMap の登録地点', city: '市町村の代表点（概略）', address: '住所から取得',
   'address-rough': '住所から取得（町名レベル以上の概略）', manual: '手入力',
+  pin: '地図で指定', gps: '現在地から設定',
 };
+// 地図タイルは国土地理院（標準地図）。出典は地図の右下に常に表示する。オフライン用の一括取得はしない
+const TILE_URL = 'https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png';
+const TILE_ATTR = '<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">国土地理院</a>';
+const JAPAN_VIEW = { center: [37.5, 137.5], zoom: 5 };
 const GSI_SEARCH = 'https://msearch.gsi.go.jp/address-search/AddressSearch?q=';
 const KIND_LABEL = { michinoeki: '道の駅', station: '駅', memorial: '記念', other: 'その他' };
 const PHOTO_MAX = 1600, THUMB_MAX = 400;   // 長辺 px
@@ -360,6 +391,7 @@ const state = {
   stamps: [],             // 全スタンプ記録（photo/thumb は Blob）
   pending: null,          // 選んだ直後でまだ保存していない写真 {file, placeId, visitId}
   stampKind: '',          // スタンプ帳の絞り込み
+  here: null,             // 現在地 {lat, lng, acc, at}（保存はせず、開いている間だけ持つ）
 };
 
 /* 評価項目。記録側は [{key, label, value}] の配列で持ち、表示名は key で設定から引く（改名・削除しても過去の値は壊れない） */
@@ -481,7 +513,7 @@ function showView(name, title, { back = false, action = null } = {}) {
   const ha = $('#headAction');
   ha.hidden = !action;
   if (action) { ha.textContent = action.label; ha.onclick = action.fn; }
-  const tab = { list: 'list', place: 'list', placeEdit: 'list', visit: 'list', visits: 'visits', settings: 'settings', stamps: 'stamps', stamp: 'stamps' }[name];
+  const tab = { list: 'list', place: 'list', placeEdit: 'list', visit: 'list', visits: 'visits', settings: 'settings', stamps: 'stamps', stamp: 'stamps', map: 'map' }[name];
   document.querySelectorAll('nav.tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
   const prev = currentView;
   currentView = name;
@@ -501,6 +533,7 @@ function route() {
   if (a === 'visits') { renderVisits(); return showView('visits', '訪問記録'); }
   if (a === 'stamps') { renderStamps(); return showView('stamps', 'スタンプ帳', { action: { label: '＋追加', fn: () => pickPhoto({}) } }); }
   if (a === 'stamp-new') return renderStampEdit(null);
+  if (a === 'map') return renderMapView();
   if (a === 'stamp' && b) return renderStampEdit(b);
   if (a === 'settings') { renderSettings(); return showView('settings', '設定・情報'); }
   renderList();
@@ -525,6 +558,8 @@ function initListControls() {
   for (const [id, key] of [['#fPref', 'pref'], ['#fVisit', 'visit'], ['#fStamp', 'stamp'], ['#fSort', 'sort']]) {
     $(id).addEventListener('change', e => { filters[key] = e.target.value; onFilter(); });
   }
+  // 「近い順」を選んだら、その操作の中で現在地を取りにいく
+  $('#fSort').addEventListener('change', () => { if (filters.sort === 'near' && !state.here) refreshHere(); });
   $('#moreBtn').addEventListener('click', () => { state.listLimit += 200; renderList(); });
 }
 function onFilter() { state.listLimit = 80; ls.set('filters', filters); renderList(); window.scrollTo(0, 0); }
@@ -544,7 +579,11 @@ function filteredPlaces() {
     arr.push(p);
   }
   const prefIdx = p => PREFS.indexOf(p.prefecture);
-  if (filters.sort === 'kana') arr.sort((a, b) => (a.nameKana || a.name).localeCompare(b.nameKana || b.name, 'ja'));
+  if (filters.sort === 'near' && state.here) {
+    // 位置の無い駅は最後に回す
+    for (const p of arr) p._d = p.lat != null ? distKm(state.here, p) : Infinity;
+    arr.sort((a, b) => a._d - b._d || prefIdx(a) - prefIdx(b));
+  } else if (filters.sort === 'kana') arr.sort((a, b) => (a.nameKana || a.name).localeCompare(b.nameKana || b.name, 'ja'));
   else if (filters.sort === 'recent') arr.sort((a, b) => (state.byPlace.get(b.id)?.last || '').localeCompare(state.byPlace.get(a.id)?.last || '') || prefIdx(a) - prefIdx(b));
   else arr.sort((a, b) => prefIdx(a) - prefIdx(b) || (a.ord ?? 1e9) - (b.ord ?? 1e9) || a.name.localeCompare(b.name, 'ja'));
   return arr;
@@ -572,11 +611,12 @@ function renderList() {
     <li><button class="item" data-id="${esc(p.id)}">
       <div class="main">
         <div class="name">${esc(p.name)}</div>
-        <div class="sub">${esc(p.address || p.prefecture || '')}${p.source === 'manual' ? '・手動追加' : p.edited ? '・編集済み' : ''}</div>
+        <div class="sub">${state.here && p.lat != null ? `<span class="dist">${fmtKm(distKm(state.here, p))}</span>・` : ''}${esc(p.address || p.prefecture || '')}${p.source === 'manual' ? '・手動追加' : p.edited ? '・編集済み' : ''}</div>
       </div>
       <div class="badges">${badgesHtml(p)}</div>
     </button></li>`).join('')
     : `<li class="empty">${state.places.size ? '条件に合う道の駅がありません' : '読み込み中…'}</li>`;
+  renderHereLine();
   $('#moreBtn').hidden = arr.length <= state.listLimit;
   $('#moreBtn').textContent = `もっと表示（残り ${(arr.length - state.listLimit).toLocaleString()} 件）`;
 }
@@ -587,7 +627,7 @@ function renderPlace(id) {
   if (!p) { go('/list'); return; }
   const s = state.byPlace.get(id);
   const visits = s?.visits || [];
-  const geo = p.lat == null ? '<span class="note">未設定（「情報を編集」から住所で取得・直接入力できます）</span>'
+  const geo = p.lat == null ? '<span class="note">未設定（「情報を編集」から地図・現在地・住所で設定できます）</span>'
     : `${p.lat.toFixed(5)}, ${p.lng.toFixed(5)}<div class="note">${esc(GEO_LABEL[p.geoPrecision] || '')}
        ・<a href="https://www.openstreetmap.org/?mlat=${p.lat}&mlon=${p.lng}#map=16/${p.lat}/${p.lng}" target="_blank" rel="noopener">地図で確認</a></div>`;
   $('#v-place').innerHTML = `
@@ -609,6 +649,7 @@ function renderPlace(id) {
         <dt>公式</dt><dd>${p.url ? `<a href="${esc(p.url)}" target="_blank" rel="noopener">${esc(p.url)}</a>` : unconfirmed('')}</dd>
       </dl>
     </div>
+    ${p.lat != null ? '<div id="miniMap" class="mini-map"></div>' : ''}
     <button class="btn" id="addVisit">＋ 訪問を記録</button>
     <div class="section-title"><span>スタンプ写真</span><span>${s?.stamps.length || 0}枚</span></div>
     <div class="strip">${stampTiles(s?.stamps || [], false)}<button class="add-tile" id="addStamp"><span class="plus">＋</span>撮る・選ぶ</button></div>
@@ -620,6 +661,7 @@ function renderPlace(id) {
   $('#addStamp').onclick = () => pickPhoto({ placeId: id });
   $('#editPlace').onclick = () => go('/place-edit/' + encodeURIComponent(id));
   showView('place', p.name, { back: true });
+  drawMiniMap(p);
 }
 
 function visitItemHtml(v, withPlace = false) {
@@ -777,6 +819,7 @@ function findDuplicates(rec) {
   return out;
 }
 
+let placePicker = null;
 function renderPlaceEdit(id) {
   const isNew = !id;
   const p = isNew ? { name: '', nameKana: '', prefecture: filters.pref || '', address: '', status: 'open', lat: null, lng: null }
@@ -800,7 +843,7 @@ function renderPlaceEdit(id) {
       <div class="hint" id="geoMsg"></div>
       <label for="pLatLng" class="hint" style="display:block;margin-top:10px">緯度, 経度（直接入力・地図アプリからの貼り付け可）</label>
       <input type="text" id="pLatLng" inputmode="decimal" value="${p.lat != null ? `${p.lat}, ${p.lng}` : ''}" placeholder="例：36.40220, 138.24918">
-      <div class="hint">地図をタップしてピンを置く・現在地から設定する方法は、今後のバージョンで追加します。</div>
+      <div id="pPin" style="margin-top:10px"></div>
     </div>
     <div class="section-title"><span>公式情報（任意・空欄は「未確認」と表示）</span></div>
     <div class="field"><label for="pRegNo">登録番号</label><input type="text" id="pRegNo" value="${esc(p.regNo)}"></div>
@@ -812,7 +855,11 @@ function renderPlaceEdit(id) {
       : !isNew ? '<p class="hint">取り込みデータの駅は削除できません（更新時に戻るため）。閉鎖した駅は「状態」を閉鎖にしてください。</p>' : ''}
   `;
   const msg = $('#geoMsg', el), latlng = $('#pLatLng', el);
-  latlng.addEventListener('input', () => { geo.precision = 'manual'; });
+  latlng.addEventListener('input', () => {
+    geo.precision = 'manual';
+    const v = parseLatLng(latlng.value);
+    if (v) placePicker.show(v);
+  });
   $('#geoBtn', el).onclick = async () => {
     const pref = $('#pPref', el).value, addr = $('#pAddr', el).value.trim();
     if (!addr) { msg.textContent = '先に住所を入れてください。'; return; }
@@ -823,9 +870,10 @@ function renderPlaceEdit(id) {
     try {
       const query = addr.startsWith(pref) ? addr : pref + addr;
       const r = await geocodeAddress(query);
-      if (!r) { msg.textContent = '住所が見つかりませんでした。住所を見直すか、緯度経度を直接入れてください。'; return; }
+      if (!r) { msg.textContent = '住所が見つかりませんでした。住所を見直すか、下の地図・現在地・緯度経度の直接入力で設定してください。'; return; }
       latlng.value = `${r.lat}, ${r.lng}`;
       geo.precision = r.rough ? 'address-rough' : 'address';
+      placePicker.show({ lat: r.lat, lng: r.lng });
       // 検索はあいまい一致なので、市区町村まで一致しない結果は目立つように警告する
       const head = t => {
         const n = t.normalize('NFKC').replace(/^(.+?[都道府県])[^市町村区]+?郡/, '$1');   // 結果側は「○○郡」を省くことがある
@@ -833,9 +881,9 @@ function renderPlaceEdit(id) {
       };
       const mismatch = head(r.title) !== head(query);
       msg.innerHTML = `${mismatch ? '<b style="color:var(--danger)">⚠ 入力した住所と市区町村が一致しません。位置を必ず確認してください。</b><br>' : ''}「${esc(r.title)}」の位置を入れました${r.rough ? '（番地まで特定できず概略です）' : ''}。
-        <a href="https://www.openstreetmap.org/?mlat=${r.lat}&mlon=${r.lng}#map=16/${r.lat}/${r.lng}" target="_blank" rel="noopener">地図で確認</a>`;
+        下の地図で位置を確かめ、ずれていればピンを動かしてください。`;
     } catch (e) {
-      msg.textContent = '取得できませんでした（通信できない・検索サービス停止など）。緯度経度を直接入れてください。';
+      msg.textContent = '取得できませんでした（通信できない・検索サービス停止など）。下の地図をタップするか、現在地・緯度経度の直接入力で設定してください。';
     } finally {
       btn.disabled = false;
     }
@@ -892,6 +940,185 @@ function renderPlaceEdit(id) {
     go('/list');
   };
   showView('placeEdit', isNew ? '道の駅を追加' : '道の駅を編集', { back: true });
+  // 地図は画面を表示してから作る（非表示のまま作ると大きさを測れない）
+  if (placePicker) placePicker.destroy();
+  placePicker = pinPicker($('#pPin', el), {
+    value: p.lat != null ? { lat: p.lat, lng: p.lng } : null,
+    onChange: (v, source) => { latlng.value = v ? `${v.lat}, ${v.lng}` : ''; geo.precision = source || 'pin'; },
+  });
+}
+
+/* ---------- 地図・位置 ---------- */
+const fmtKm = d => d < 1 ? `${Math.round(d * 1000)}m` : d < 10 ? `${d.toFixed(1)}km` : `${Math.round(d)}km`;
+const round6 = ll => ({ lat: +(+ll.lat).toFixed(6), lng: +(+ll.lng).toFixed(6) });
+
+// 現在地は、利用者の操作（ボタン・並び順の選択）のときだけ取得する。端末外へは送らない
+function locate() {
+  return new Promise((resolve, reject) => {
+    if (!navigator.geolocation) { reject(new Error('この端末・ブラウザでは現在地を使えません')); return; }
+    navigator.geolocation.getCurrentPosition(
+      pos => { state.here = { lat: pos.coords.latitude, lng: pos.coords.longitude, acc: pos.coords.accuracy, at: Date.now() }; resolve(state.here); },
+      err => reject(new Error(err.code === 1 ? '位置情報の利用が許可されていません。端末の設定でこのサイト（Safari）の位置情報を許可してください。'
+        : err.code === 3 ? '現在地の取得に時間がかかりすぎました。屋外などでもう一度お試しください。' : '現在地を取得できませんでした。')),
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 60000 });
+  });
+}
+async function refreshHere() {
+  const line = $('#hereLine');
+  line.hidden = false; line.innerHTML = '<span>現在地を取得しています…</span>';
+  try { await locate(); }
+  catch (e) { toast(e.message); }
+  renderList();
+}
+function renderHereLine() {
+  const line = $('#hereLine');
+  if (filters.sort !== 'near') { line.hidden = true; return; }
+  line.hidden = false;
+  line.innerHTML = state.here
+    ? `<span>現在地（${new Date(state.here.at).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })}・誤差 約${fmtKm(state.here.acc / 1000)}）から近い順</span><button id="hereBtn">📍 更新</button>`
+    : `<span>現在地がまだありません</span><button id="hereBtn">📍 現在地を取得</button>`;
+  $('#hereBtn').onclick = refreshHere;
+}
+
+function makeMap(elm, opts = {}) {
+  const m = L.map(elm, { zoomControl: true, ...opts });
+  m.attributionControl.setPrefix('<a href="https://leafletjs.com" target="_blank" rel="noopener">Leaflet</a>');
+  L.tileLayer(TILE_URL, { attribution: TILE_ATTR, minZoom: 5, maxZoom: 18 }).addTo(m);
+  // 非表示の画面で作った地図は大きさ0のままになるので、入れ物の大きさが変わったら測り直す
+  if ('ResizeObserver' in window) {
+    const ro = new ResizeObserver(() => m.invalidateSize());
+    ro.observe(elm);
+    m.on('unload', () => ro.disconnect());
+  }
+  return m;
+}
+function cssVar(n) { return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
+function placeColor(p) {
+  const s = state.byPlace.get(p.id);
+  return s?.stamp ? cssVar('--stamp') : s?.visited ? cssVar('--accent') : '#8a8f8b';
+}
+
+// 地図でピンを指定する部品（タップで置く・ドラッグで動かす・現在地にする・外す）
+function pinPicker(container, { value, fallback, onChange, hereLabel = '📍 現在地にする' }) {
+  container.innerHTML = `<div class="pin-map"></div>
+    <div class="pin-bar"><button type="button" class="btn ghost" data-act="here">${hereLabel}</button><button type="button" class="btn ghost" data-act="clear">ピンを外す</button></div>
+    <div class="hint" data-msg>地図をタップするとピンを置けます。ピンは指で動かせます。</div>`;
+  const map = makeMap(container.querySelector('.pin-map'));
+  const msg = container.querySelector('[data-msg]');
+  let marker = null;
+  const place = (ll, notify, source) => {
+    if (!ll) {
+      if (marker) { map.removeLayer(marker); marker = null; }
+      if (notify) onChange(null);
+      return;
+    }
+    if (!marker) {
+      marker = L.marker(ll, { draggable: true, autoPan: true }).addTo(map);
+      marker.on('dragend', () => onChange(round6(marker.getLatLng()), 'pin'));
+    } else marker.setLatLng(ll);
+    if (notify) onChange(round6(ll), source);
+  };
+  const start = value || fallback || (state.here && { lat: state.here.lat, lng: state.here.lng });
+  if (start) map.setView([start.lat, start.lng], value ? 17 : 15); else map.setView(JAPAN_VIEW.center, JAPAN_VIEW.zoom);
+  if (value) place(value, false);
+  map.on('click', e => place(e.latlng, true, 'pin'));
+  container.querySelector('[data-act="here"]').onclick = async e => {
+    const b = e.currentTarget;
+    if (b.disabled) return;
+    b.disabled = true; msg.textContent = '現在地を取得しています…';
+    try {
+      const h = await locate();
+      place(L.latLng(h.lat, h.lng), true, 'gps');
+      map.setView([h.lat, h.lng], 17);
+      msg.textContent = `現在地にピンを置きました（誤差 約${fmtKm(h.acc / 1000)}）。必要ならピンを動かして調整してください。`;
+    } catch (err) { msg.textContent = err.message; }
+    finally { b.disabled = false; }
+  };
+  container.querySelector('[data-act="clear"]').onclick = () => { place(null, true); msg.textContent = 'ピンを外しました。'; };
+  return {
+    map,
+    show(v) { place(v, false); if (v) map.setView([v.lat, v.lng], Math.max(map.getZoom(), 16)); },  // 外から値を入れる（onChange は呼ばない）
+    refresh() { map.invalidateSize(); },
+    destroy() { map.remove(); },
+  };
+}
+
+/* 地図タブ：一覧の絞り込みをそのまま反映して表示する */
+let bigMap = null, placeLayer = null, hereLayer = null;
+function renderMapView() {
+  showView('map', '地図');
+  if (!bigMap) {
+    bigMap = makeMap($('#bigMap'), { preferCanvas: true });
+    const v = ls.get('mapView', null);
+    bigMap.setView(v ? v.c : JAPAN_VIEW.center, v ? v.z : JAPAN_VIEW.zoom);
+    bigMap.on('moveend', () => { const c = bigMap.getCenter(); ls.set('mapView', { c: [c.lat, c.lng], z: bigMap.getZoom() }); });
+    const Locate = L.Control.extend({
+      options: { position: 'topright' },
+      onAdd() {
+        const b = L.DomUtil.create('button', 'map-locate');
+        b.type = 'button'; b.title = '現在地'; b.textContent = '📍';
+        L.DomEvent.disableClickPropagation(b);
+        b.onclick = async () => {
+          try { const h = await locate(); drawHere(); bigMap.setView([h.lat, h.lng], Math.max(bigMap.getZoom(), 12)); }
+          catch (e) { toast(e.message); }
+        };
+        return b;
+      },
+    });
+    new Locate().addTo(bigMap);
+  }
+  requestAnimationFrame(() => bigMap.invalidateSize());
+  if (placeLayer) placeLayer.remove();
+  placeLayer = L.layerGroup();
+  const arr = filteredPlaces();
+  let shown = 0;
+  for (const p of arr) {
+    if (p.lat == null) continue;
+    shown++;
+    L.circleMarker([p.lat, p.lng], { radius: 7, weight: 1.5, color: '#ffffff', fillColor: placeColor(p), fillOpacity: p.status === 'closed' ? 0.3 : 0.95 })
+      .bindPopup(() => {
+        const s = state.byPlace.get(p.id);
+        return `<b>${esc(p.name)}</b><br>${esc(p.address || p.prefecture || '')}<br>
+          ${s?.visited ? '訪問済み' : '未訪問'}${s?.stamp ? '・スタンプあり' : ''}${p.status && p.status !== 'open' ? '・' + STATUS_LABEL[p.status] : ''}
+          ${state.here ? `・${fmtKm(distKm(state.here, p))}` : ''}<br><a href="#/place/${encodeURIComponent(p.id)}">詳しく見る ›</a>`;
+      })
+      .addTo(placeLayer);
+  }
+  placeLayer.addTo(bigMap);
+  drawHere();
+  const noPos = arr.length - shown;
+  const filtered = filters.q || filters.pref || filters.visit || filters.stamp;
+  const dot = c => `<span style="color:${c}">●</span>`;
+  $('#mapInfo').innerHTML = `<span>${shown.toLocaleString()}駅${filtered ? '（絞り込み中）' : ''}${noPos ? `・位置なし${noPos}` : ''}</span>
+    <span class="legend">${dot('#8a8f8b')}未訪問 ${dot(cssVar('--accent'))}訪問 ${dot(cssVar('--stamp'))}スタンプ</span>`;
+}
+function drawHere() {
+  if (!bigMap) return;
+  if (hereLayer) hereLayer.remove();
+  if (!state.here) return;
+  hereLayer = L.layerGroup([
+    L.circle([state.here.lat, state.here.lng], { radius: state.here.acc, weight: 1, color: '#2b7bd6', fillOpacity: 0.1 }),
+    L.circleMarker([state.here.lat, state.here.lng], { radius: 8, weight: 3, color: '#ffffff', fillColor: '#2b7bd6', fillOpacity: 1 }).bindTooltip('現在地'),
+  ]).addTo(bigMap);
+}
+
+/* 道の駅の画面の小さな地図（駅の位置と、スタンプ設置場所のピン） */
+let miniMap = null;
+function drawMiniMap(p) {
+  if (miniMap) { miniMap.remove(); miniMap = null; }
+  const box = $('#miniMap');
+  if (!box || p.lat == null) return;
+  miniMap = makeMap(box, { scrollWheelZoom: false });
+  const pts = [[p.lat, p.lng]];
+  L.marker([p.lat, p.lng]).bindPopup(`<b>${esc(p.name)}</b>`).addTo(miniMap);
+  for (const st of state.byPlace.get(p.id)?.stamps || []) {
+    if (st.stampSpotLat == null) continue;
+    pts.push([st.stampSpotLat, st.stampSpotLng]);
+    L.circleMarker([st.stampSpotLat, st.stampSpotLng], { radius: 8, weight: 2, color: '#ffffff', fillColor: cssVar('--stamp'), fillOpacity: 1 })
+      .bindPopup(`スタンプ設置場所${st.stampSpotNote ? '<br>' + esc(st.stampSpotNote) : ''}`).addTo(miniMap);
+  }
+  if (pts.length > 1) miniMap.fitBounds(pts, { padding: [30, 30], maxZoom: 17 }); else miniMap.setView(pts[0], 16);
+  requestAnimationFrame(() => miniMap && miniMap.invalidateSize());
 }
 
 /* ---------- スタンプ写真 ---------- */
@@ -975,6 +1202,7 @@ function renderStamps() {
 }
 
 /* 登録・編集 */
+let spotPicker = null;
 async function renderStampEdit(id) {
   const el = $('#v-stamp');
   let st, isNew = !id, processed = null;
@@ -1014,7 +1242,9 @@ async function renderStampEdit(id) {
         ${visits.length ? '' : '<div class="hint">この場所の訪問記録はまだありません。</div>'}</div>` : ''}
       <div class="field"><label for="stDate">日付</label><input type="date" id="stDate" value="${esc(st.takenDate)}"></div>
       <div class="field"><label for="stSpot">スタンプの設置場所</label>
-        <input type="text" id="stSpot" value="${esc(st.stampSpotNote)}" placeholder="例：館内の観光案内カウンター横"></div>
+        <input type="text" id="stSpot" value="${esc(st.stampSpotNote)}" placeholder="例：館内の観光案内カウンター横">
+        <div class="hint" style="margin:8px 0 6px">設置場所のピン（任意）${st.stampSpotLat != null ? `：${st.stampSpotLat.toFixed(5)}, ${st.stampSpotLng.toFixed(5)}` : ''}</div>
+        <div id="stPin"></div></div>
       <div class="field"><label for="stNote">メモ</label><textarea id="stNote" placeholder="インクの色・押し方のコツ・記念スタンプの名前など">${esc(st.note)}</textarea></div>
       <div class="btn-row"><button class="btn" id="saveStamp"${isNew && !processed ? ' disabled' : ''}>保存</button></div>
       ${isNew ? '' : '<div class="btn-row"><button class="btn danger" id="delStamp">このスタンプ写真を削除</button></div>'}
@@ -1049,6 +1279,18 @@ async function renderStampEdit(id) {
     };
     $('#saveStamp', el).onclick = save;
     const del = $('#delStamp', el); if (del) del.onclick = remove;
+    if (spotPicker) spotPicker.destroy();
+    spotPicker = pinPicker($('#stPin', el), {
+      value: st.stampSpotLat != null ? { lat: st.stampSpotLat, lng: st.stampSpotLng } : null,
+      fallback: place?.lat != null ? { lat: place.lat, lng: place.lng } : null,
+      hereLabel: '📍 ここにある',
+      onChange: v => {
+        st.stampSpotLat = v ? v.lat : null; st.stampSpotLng = v ? v.lng : null;
+        const h = el.querySelector('#stPin').previousElementSibling;
+        h.textContent = '設置場所のピン（任意）' + (v ? `：${v.lat.toFixed(5)}, ${v.lng.toFixed(5)}` : '');
+      },
+    });
+    requestAnimationFrame(() => spotPicker && spotPicker.refresh());
   };
 
   const runProcess = async file => {
@@ -1148,6 +1390,8 @@ async function renderSettings() {
       <p>同梱の道の駅データは <a href="https://opendatacommons.org/licenses/odbl/1-0/" target="_blank" rel="noopener">Open Database License (ODbL) 1.0</a> で提供しています（アプリのコードは MIT License）。</p>
       <p><b>駅名・よみ・所在地・登録回・登録年月・公式サイト</b>：<a href="https://www.mlit.go.jp/road/Michi-no-Eki/list.html" target="_blank" rel="noopener">国土交通省「道の駅」一覧</a>を加工して作成（<a href="https://www.mlit.go.jp/link.html" target="_blank" rel="noopener">公共データ利用規約 第1.0版</a>）。Excel 一覧から項目を抽出し、ふりがなをひらがなに変換して JSON にしました。</p>
       <p><b>位置</b>：© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors（ODbL 1.0）。名称に「道の駅」を含む地物を駅名・市町村で照合しました。照合できなかった駅には位置を含めていません。</p>
+      <p><b>地図</b>：<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">国土地理院（地理院タイル・標準地図）</a>。地図の右下にも出典を表示しています。地図は表示のつど読み込み、オフライン用の一括保存はしません。地図ライブラリは <a href="https://leafletjs.com" target="_blank" rel="noopener">Leaflet</a>（BSD-2-Clause）。</p>
+      <p><b>現在地</b>：「近い順」やピンの設定でボタンを押したときだけ取得し、端末の外には送りません。</p>
       <p><b>住所からの座標取得</b>：国土地理院の住所検索を使います。ボタンを1回押すごとに1回だけ、入力した住所を送信します（自動の一括取得はしません）。取得した座標はこの端末内にだけ保存されます。</p>
       <p class="note">このアプリおよび加工データは、国土交通省・国土地理院が作成したものではありません。詳細はリポジトリの data/DATA_LICENSE.md を参照してください。</p>
     </div>
