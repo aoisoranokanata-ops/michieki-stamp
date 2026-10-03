@@ -338,7 +338,7 @@ nav.tabs button.on { color: var(--accent); font-weight: 700; }
 
 <script>
 'use strict';
-const APP_VERSION = '0.6.0';   // sw.js の VERSION とそろえる
+const APP_VERSION = '0.6.1';   // sw.js の VERSION とそろえる
 const APP_KEY = 'michieki-stamp';           // DB名・localStorageキーの接頭辞（github.io は他アプリと同一オリジン）
 const DATA_URL = 'data/michinoeki.json';
 // 評価項目の初期値。実際の項目は meta ストアの ratingItems（設定画面で増減・改名・並べ替え・非表示）
@@ -1845,11 +1845,21 @@ window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); state.
 function registerSW() {
   if (!('serviceWorker' in navigator)) return;
   const hadController = !!navigator.serviceWorker.controller;   // 初回インストール時は更新の知らせも再読み込みもしない
+  let reloading = false;
   navigator.serviceWorker.register('sw.js').then(reg => {
     const offer = w => {
       if (!hadController || !w) return;
       $('#updateBar').hidden = false;
-      $('#updateBtn').onclick = () => { $('#updateBtn').disabled = true; w.postMessage('skipWaiting'); };
+      $('#updateBtn').onclick = () => {
+        const btn = $('#updateBtn');
+        btn.disabled = true; btn.textContent = '更新中…';
+        // 押した時点で待機している版に切り替えを頼む（バーを出した後に状態が変わっていることがあるので取り直す）
+        const waiting = reg.waiting || (w.state === 'installed' ? w : null);
+        if (waiting) waiting.postMessage('skipWaiting');
+        // iPhone のホーム画面アプリでは controllerchange が届かないことがあるため、少し待って必ず読み直す。
+        // アプリ本体はネットワーク優先なので、読み直せば最新の版になる
+        setTimeout(() => { reloading = true; location.reload(); }, waiting ? 1500 : 0);
+      };
     };
     if (reg.waiting) offer(reg.waiting);
     reg.addEventListener('updatefound', () => {
@@ -1859,7 +1869,6 @@ function registerSW() {
     // 開いたままでも時々更新を確かめる
     setInterval(() => reg.update().catch(() => {}), 60 * 60 * 1000);
   }).catch(() => {});
-  let reloading = false;
   navigator.serviceWorker.addEventListener('controllerchange', () => {
     if (!hadController || reloading) return;
     reloading = true; location.reload();
