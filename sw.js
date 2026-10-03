@@ -1,7 +1,7 @@
 // 道の駅スタンプ帳 Service Worker
 // github.io は他のアプリと同じオリジンなので、キャッシュ名に接頭辞を付け、消すのも自分のものだけにする。
 // VERSION は index.html の APP_VERSION と必ずそろえて上げる。
-const VERSION = '0.6.2';
+const VERSION = '0.6.3';
 const PREFIX = 'michieki-stamp-';
 const CACHE = PREFIX + VERSION;
 

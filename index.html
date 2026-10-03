@@ -31,6 +31,8 @@
   }
 }
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+/* hidden 属性を付けた要素は、display を指定したクラスより優先して必ず隠す（.update-bar などが隠れていなかった） */
+[hidden] { display: none !important; }
 html { -webkit-text-size-adjust: 100%; }
 body {
   margin: 0; background: var(--bg); color: var(--text);
@@ -339,7 +341,7 @@ nav.tabs button.on { color: var(--accent); font-weight: 700; }
 
 <script>
 'use strict';
-const APP_VERSION = '0.6.2';   // sw.js の VERSION とそろえる
+const APP_VERSION = '0.6.3';   // sw.js の VERSION とそろえる
 const APP_KEY = 'michieki-stamp';           // DB名・localStorageキーの接頭辞（github.io は他アプリと同一オリジン）
 const DATA_URL = 'data/michinoeki.json';
 // 評価項目の初期値。実際の項目は meta ストアの ratingItems（設定画面で増減・改名・並べ替え・非表示）
