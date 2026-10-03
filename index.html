@@ -176,6 +176,11 @@ nav.tabs button.on { color: var(--accent); font-weight: 700; }
 .here-line { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 13px; color: var(--muted); margin: -4px 2px 8px; }
 .here-line button { border: 1px solid var(--line); background: var(--surface); border-radius: 16px; height: 32px; padding: 0 12px; font-size: 13px; color: var(--accent); font-weight: 700; }
 .dist { color: var(--accent); font-weight: 700; }
+.type-chips { margin-bottom: 10px; }
+.type-chips .chip[aria-pressed=true] { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+.st-results { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+.st-results button { text-align: left; min-height: 48px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); padding: 6px 12px; line-height: 1.35; }
+.st-results .op { display: block; font-size: 12px; color: var(--muted); }
 .sr-file { position: fixed; left: -1000px; top: 0; width: 1px; height: 1px; opacity: 0; }
 .chips { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 4px; scrollbar-width: none; }
 .chips::-webkit-scrollbar { display: none; }
@@ -221,6 +226,7 @@ nav.tabs button.on { color: var(--accent); font-weight: 700; }
   <!-- 一覧 -->
   <section class="view" id="v-list">
     <div id="loadBanner"></div>
+    <div class="chips type-chips" id="typeChips"></div>
     <div class="search">
       <input id="q" type="search" placeholder="名前・よみ・市町村で検索" autocomplete="off" enterkeyhint="search">
       <button class="clear" id="qClear" aria-label="検索語を消す" hidden>✕</button>
@@ -290,7 +296,7 @@ nav.tabs button.on { color: var(--accent); font-weight: 700; }
 
 <script>
 'use strict';
-const APP_VERSION = '0.3.0';
+const APP_VERSION = '0.4.0';
 const APP_KEY = 'michieki-stamp';           // DB名・localStorageキーの接頭辞（github.io は他アプリと同一オリジン）
 const DATA_URL = 'data/michinoeki.json';
 // 評価項目の初期値。実際の項目は meta ストアの ratingItems（設定画面で増減・改名・並べ替え・非表示）
@@ -300,7 +306,7 @@ const STATUS_LABEL = { open: '営業中', suspended: '休止中', closed: '閉�
 const GEO_LABEL = {
   osm: 'OpenStreetMap の登録地点', city: '市町村の代表点（概略）', address: '住所から取得',
   'address-rough': '住所から取得（町名レベル以上の概略）', manual: '手入力',
-  pin: '地図で指定', gps: '現在地から設定',
+  pin: '地図で指定', gps: '現在地から設定', n02: '国土数値情報（鉄道）の駅位置',
 };
 // 地図タイルは国土地理院（標準地図）。出典は地図の右下に常に表示する。オフライン用の一括取得はしない
 const TILE_URL = 'https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png';
@@ -308,6 +314,13 @@ const TILE_ATTR = '<a href="https://maps.gsi.go.jp/development/ichiran.html" tar
 const JAPAN_VIEW = { center: [37.5, 137.5], zoom: 5 };
 const GSI_SEARCH = 'https://msearch.gsi.go.jp/address-search/AddressSearch?q=';
 const KIND_LABEL = { michinoeki: '道の駅', station: '駅', memorial: '記念', other: 'その他' };
+const PLACE_TYPE_LABEL = { michinoeki: '道の駅', station: '駅', memorial: '記念スポット', other: 'その他の場所' };
+// 一覧の切り替え。記念スポットとその他の場所はまとめて1つの一覧にする
+const LIST_GROUPS = { michinoeki: '道の駅', station: '駅', spot: '記念・その他' };
+const groupOf = p => p.type === 'michinoeki' ? 'michinoeki' : p.type === 'station' ? 'station' : 'spot';
+const STATIONS_URL = 'data/stations.json';
+// 駅は「新宿駅」のように表示する（データ上の駅名に「駅」は付いていない）
+const placeTitle = p => p ? (p.type === 'station' && !/駅$/.test(p.name) ? p.name + '駅' : p.name) : '';
 const PHOTO_MAX = 1600, THUMB_MAX = 400;   // 長辺 px
 const PREFS = ['北海道','青森県','岩手県','宮城県','秋田県','山形県','福島県','茨城県','栃木県','群馬県','埼玉県','千葉県','東京都','神奈川県','新潟県','富山県','石川県','福井県','山梨県','長野県','岐阜県','静岡県','愛知県','三重県','滋賀県','京都府','大阪府','兵庫県','奈良県','和歌山県','鳥取県','島根県','岡山県','広島県','山口県','徳島県','香川県','愛媛県','高知県','福岡県','佐賀県','長崎県','熊本県','大分県','宮崎県','鹿児島県','沖縄県'];
 
@@ -432,7 +445,7 @@ function reindexVisits() {
 }
 
 function searchKey(p) {
-  return normQ(`${p.name} ${p.nameKana || ''} ${p.address || ''}`);
+  return normQ(`${placeTitle(p)} ${p.nameKana || ''} ${p.address || ''} ${p.operator || ''} ${p.line || ''}`);
 }
 
 /* ---------- 道の駅データの取り込み ---------- */
@@ -457,7 +470,7 @@ async function syncImportData() {
   // 手動追加済みの駅が後から公式一覧に載った場合、二重登録にしない（同じ都道府県・同じ名前なら同一とみなす）
   const manualByName = new Map(), linked = new Set();
   for (const p of state.places.values()) {
-    if (p.source !== 'manual') continue;
+    if (p.source !== 'manual' || p.type !== 'michinoeki') continue;
     manualByName.set(p.prefecture + '|' + normQ(p.name), p);
     if (p.importId) linked.add(p.importId);
   }
@@ -545,9 +558,17 @@ function back() {
 }
 
 /* ---------- 一覧 ---------- */
-const filters = ls.get('filters', { q: '', pref: '', visit: '', stamp: '', sort: 'reg' });
+const filters = { type: 'michinoeki', ...ls.get('filters', { q: '', pref: '', visit: '', stamp: '', sort: 'reg' }) };
 
+function renderTypeChips() {
+  $('#typeChips').innerHTML = Object.entries(LIST_GROUPS).map(([k, l]) => `<button class="chip" data-type="${k}" aria-pressed="${filters.type === k}">${l}</button>`).join('');
+}
 function initListControls() {
+  renderTypeChips();
+  $('#typeChips').addEventListener('click', e => {
+    const b = e.target.closest('[data-type]'); if (!b) return;
+    filters.type = b.dataset.type; renderTypeChips(); onFilter();
+  });
   const fPref = $('#fPref');
   PREFS.forEach(p => fPref.insertAdjacentHTML('beforeend', `<option>${p}</option>`));
   $('#q').value = filters.q; fPref.value = filters.pref; $('#fVisit').value = filters.visit;
@@ -568,7 +589,7 @@ function filteredPlaces() {
   const q = normQ(filters.q);
   let arr = [];
   for (const p of state.places.values()) {
-    if (p.type !== 'michinoeki') continue;
+    if (groupOf(p) !== filters.type) continue;
     if (filters.pref && p.prefecture !== filters.pref) continue;
     const s = state.byPlace.get(p.id);
     if (filters.visit === 'yes' && !s?.visited) continue;
@@ -598,24 +619,32 @@ function badgesHtml(p) {
   return h;
 }
 
+function placeSub(p) {
+  if (p.type === 'station') return [p.operator, p.line, p.prefecture].filter(Boolean).join('・');
+  if (p.type !== 'michinoeki') return [PLACE_TYPE_LABEL[p.type], p.address || p.prefecture].filter(Boolean).join('・');
+  return p.address || p.prefecture || '';
+}
 function renderList() {
   for (const el of ['#fPref', '#fVisit', '#fStamp']) $(el).classList.toggle('set', !!$(el).value);
   $('#qClear').hidden = !filters.q;
   const arr = filteredPlaces();
-  const total = [...state.places.values()].filter(p => p.type === 'michinoeki' && isActive(p));
+  const total = [...state.places.values()].filter(p => groupOf(p) === filters.type && isActive(p));
   const visited = total.filter(p => state.byPlace.get(p.id)?.visited).length;
   $('#countText').textContent = `${arr.length.toLocaleString()} 件`;
-  $('#progressText').textContent = total.length ? `訪問 ${visited} / ${total.length}` : '';
+  // 道の駅は全駅に対する達成状況、駅・記念は登録したものの訪問数
+  $('#progressText').textContent = filters.type === 'michinoeki' ? (total.length ? `訪問 ${visited} / ${total.length}` : '') : `登録 ${total.length}・訪問 ${visited}`;
   const shown = arr.slice(0, state.listLimit);
   $('#list').innerHTML = shown.length ? shown.map(p => `
     <li><button class="item" data-id="${esc(p.id)}">
       <div class="main">
-        <div class="name">${esc(p.name)}</div>
-        <div class="sub">${state.here && p.lat != null ? `<span class="dist">${fmtKm(distKm(state.here, p))}</span>・` : ''}${esc(p.address || p.prefecture || '')}${p.source === 'manual' ? '・手動追加' : p.edited ? '・編集済み' : ''}</div>
+        <div class="name">${esc(placeTitle(p))}</div>
+        <div class="sub">${state.here && p.lat != null ? `<span class="dist">${fmtKm(distKm(state.here, p))}</span>・` : ''}${esc(placeSub(p))}${p.type === 'michinoeki' ? (p.source === 'manual' ? '・手動追加' : p.edited ? '・編集済み' : '') : ''}</div>
       </div>
       <div class="badges">${badgesHtml(p)}</div>
     </button></li>`).join('')
-    : `<li class="empty">${state.places.size ? '条件に合う道の駅がありません' : '読み込み中…'}</li>`;
+    : `<li class="empty">${!state.places.size ? '読み込み中…'
+        : filters.type !== 'michinoeki' && !total.length ? `${LIST_GROUPS[filters.type]}はまだ登録されていません。<br>右上の「＋追加」から登録できます。`
+        : '条件に合う場所がありません'}</li>`;
   renderHereLine();
   $('#moreBtn').hidden = arr.length <= state.listLimit;
   $('#moreBtn').textContent = `もっと表示（残り ${(arr.length - state.listLimit).toLocaleString()} 件）`;
@@ -632,7 +661,7 @@ function renderPlace(id) {
        ・<a href="https://www.openstreetmap.org/?mlat=${p.lat}&mlon=${p.lng}#map=16/${p.lat}/${p.lng}" target="_blank" rel="noopener">地図で確認</a></div>`;
   $('#v-place').innerHTML = `
     <div class="card place-head">
-      <h2>${esc(p.name)}</h2>
+      <h2>${esc(placeTitle(p))}</h2>
       ${p.nameKana ? `<div class="kana">${esc(p.nameKana)}</div>` : ''}
       <div class="status-row">
         ${s?.visited ? `<span class="badge v">訪問済み ${visits.filter(v => v.visited).length}回</span>` : '<span class="badge n">未訪問</span>'}
@@ -642,10 +671,12 @@ function renderPlace(id) {
         ${p.missingFromSource ? '<span class="badge n">最新の公式一覧に無し</span>' : ''}
       </div>
       <dl class="kv">
-        <dt>所在地</dt><dd>${unconfirmed(p.address)}</dd>
+        ${p.type === 'station' ? `<dt>事業者</dt><dd>${unconfirmed(p.operator)}</dd><dt>路線</dt><dd>${unconfirmed(p.line)}</dd>`
+          : p.type !== 'michinoeki' ? `<dt>種類</dt><dd>${PLACE_TYPE_LABEL[p.type]}</dd>` : ''}
+        <dt>所在地</dt><dd>${p.type === 'michinoeki' ? unconfirmed(p.address) : unconfirmed([p.prefecture, p.address].filter(Boolean).join(' '))}</dd>
         <dt>位置</dt><dd>${geo}</dd>
-        <dt>登録番号</dt><dd>${unconfirmed(p.regNo)}</dd>
-        <dt>登録</dt><dd>${p.regRound || p.regDate ? esc([p.regRound, p.regDate && `（${p.regDate}）`].filter(Boolean).join('')) : unconfirmed('')}</dd>
+        ${p.type === 'michinoeki' ? `<dt>登録番号</dt><dd>${unconfirmed(p.regNo)}</dd>
+        <dt>登録</dt><dd>${p.regRound || p.regDate ? esc([p.regRound, p.regDate && `（${p.regDate}）`].filter(Boolean).join('')) : unconfirmed('')}</dd>` : ''}
         <dt>公式</dt><dd>${p.url ? `<a href="${esc(p.url)}" target="_blank" rel="noopener">${esc(p.url)}</a>` : unconfirmed('')}</dd>
       </dl>
     </div>
@@ -655,12 +686,12 @@ function renderPlace(id) {
     <div class="strip">${stampTiles(s?.stamps || [], false)}<button class="add-tile" id="addStamp"><span class="plus">＋</span>撮る・選ぶ</button></div>
     <div class="section-title"><span>訪問記録</span><span>${visits.length}件</span></div>
     <ul class="list">${visits.length ? visits.map(v => visitItemHtml(v)).join('') : '<li class="empty">まだ記録がありません</li>'}</ul>
-    <div class="btn-row"><button class="btn ghost" id="editPlace">この道の駅の情報を編集</button></div>
+    <div class="btn-row"><button class="btn ghost" id="editPlace">この${p.type === 'michinoeki' ? '道の駅' : '場所'}の情報を編集</button></div>
   `;
   $('#addVisit').onclick = () => go('/visit/new/' + encodeURIComponent(id));
   $('#addStamp').onclick = () => pickPhoto({ placeId: id });
   $('#editPlace').onclick = () => go('/place-edit/' + encodeURIComponent(id));
-  showView('place', p.name, { back: true });
+  showView('place', placeTitle(p), { back: true });
   drawMiniMap(p);
 }
 
@@ -670,7 +701,7 @@ function visitItemHtml(v, withPlace = false) {
   const order = new Map(state.ratingItems.filter(i => !i.hidden).map((i, n) => [i.key, n]));
   const det = detailsArray(v).filter(d => d.value && order.has(d.key)).sort((a, b) => order.get(a.key) - order.get(b.key));
   return `<li><button class="visit" data-visit="${esc(v.id)}">
-    ${p ? `<div class="place">${esc(p.name)}<span class="note">　${esc(p.prefecture || '')}</span></div>` : ''}
+    ${p ? `<div class="place">${esc(placeTitle(p))}<span class="note">　${esc(p.prefecture || '')}</span></div>` : ''}
     <div class="top-line">
       <span class="date">${fmtDate(v.visitedDate)}</span>
       ${v.visited ? '' : '<span class="badge n">未入場</span>'}
@@ -810,6 +841,12 @@ function findDuplicates(rec) {
   const out = [];
   for (const o of state.places.values()) {
     if (o.id === rec.id || o.type !== rec.type) continue;
+    if (rec.type === 'station') {
+      // 大きな駅は事業者ごとにスタンプが別なので、同名でも事業者・路線が違えば別の駅として扱う
+      if (normQ(o.name) === n && (o.operator || '') === (rec.operator || '') && (!rec.line || !o.line || o.line === rec.line))
+        out.push(`・${placeTitle(o)}（${[o.operator, o.line].filter(Boolean).join('・')}）`);
+      continue;
+    }
     if (normQ(o.name) === n) { out.push(`・${o.name}（${o.prefecture}）同じ名前`); continue; }
     if (rec.lat != null && o.lat != null && o.geoPrecision !== 'city') {
       const d = distKm(rec, o);
@@ -822,19 +859,29 @@ function findDuplicates(rec) {
 let placePicker = null;
 function renderPlaceEdit(id) {
   const isNew = !id;
-  const p = isNew ? { name: '', nameKana: '', prefecture: filters.pref || '', address: '', status: 'open', lat: null, lng: null }
+  const newType = { michinoeki: 'michinoeki', station: 'station', spot: 'memorial' }[filters.type] || 'michinoeki';
+  const p = isNew ? { type: newType, name: '', nameKana: '', prefecture: filters.pref || '', address: '', status: 'open', lat: null, lng: null, operator: '', line: '' }
     : state.places.get(id);
   if (!p) { go('/list'); return; }
   let geo = { lat: p.lat, lng: p.lng, precision: p.geoPrecision };
   const el = $('#v-placeEdit');
+  const T = p.type;
   el.innerHTML = `
-    ${isNew ? '<p class="note" style="margin-top:0">一覧に無い新しい道の駅などを追加できます。</p>'
+    ${isNew && T === 'michinoeki' ? '<p class="note" style="margin-top:0">一覧に無い新しい道の駅を追加できます。</p>'
       : p.source === 'import' ? '<p class="note" style="margin-top:0">編集すると「編集済み」になり、今後データを更新してもこの駅の内容は上書きされません。</p>' : ''}
-    <div class="field"><label for="pName">名前（「道の駅」は不要）</label><input type="text" id="pName" value="${esc(p.name)}"></div>
+    ${isNew && T === 'station' ? `<div class="field"><label for="stQ">駅名で探す（入力の補助）</label>
+      <input type="search" id="stQ" placeholder="例：新宿　（「新宿 京王」のように事業者・路線でも絞れます）" autocomplete="off" style="width:100%;min-height:48px;border:1px solid var(--line);border-radius:12px;background:var(--surface);padding:0 12px;font-size:16px">
+      <div class="hint" id="stMsg">選ぶと駅名・事業者・路線・位置が入ります。見つからない駅は下の欄に直接入力できます。</div>
+      <div class="st-results" id="stRes"></div></div>` : ''}
+    ${T !== 'michinoeki' && T !== 'station' ? `<div class="field"><label for="pType">種類</label>
+      <select id="pType">${['memorial', 'other'].map(k => `<option value="${k}"${k === T ? ' selected' : ''}>${PLACE_TYPE_LABEL[k]}</option>`).join('')}</select></div>` : ''}
+    <div class="field"><label for="pName">${T === 'michinoeki' ? '名前（「道の駅」は不要）' : T === 'station' ? '駅名（「駅」は不要）' : '名前'}</label><input type="text" id="pName" value="${esc(p.name)}"></div>
+    ${T === 'station' ? `<div class="field"><label for="pOp">事業者</label><input type="text" id="pOp" value="${esc(p.operator)}" placeholder="例：JR東日本"></div>
+      <div class="field"><label for="pLine">路線</label><input type="text" id="pLine" value="${esc(p.line)}" placeholder="例：山手線"></div>` : ''}
     <div class="field"><label for="pKana">よみ（任意）</label><input type="text" id="pKana" value="${esc(p.nameKana)}"></div>
-    <div class="field"><label for="pPref">都道府県</label>
+    <div class="field"><label for="pPref">都道府県</label><div class="hint" id="prefHint"></div>
       <select id="pPref"><option value="">選択してください</option>${PREFS.map(x => `<option${x === p.prefecture ? ' selected' : ''}>${x}</option>`).join('')}</select></div>
-    <div class="field"><label for="pAddr">住所</label><input type="text" id="pAddr" value="${esc(p.address)}" placeholder="例：○○市△△町1-2-3"></div>
+    <div class="field"><label for="pAddr">住所${T === 'michinoeki' ? '' : '（任意）'}</label><input type="text" id="pAddr" value="${esc(p.address)}" placeholder="例：○○市△△町1-2-3"></div>
     <div class="field"><label for="pStatus">状態</label>
       <select id="pStatus">${Object.entries(STATUS_LABEL).map(([k, l]) => `<option value="${k}"${k === (p.status || 'open') ? ' selected' : ''}>${l}</option>`).join('')}</select></div>
     <div class="field">
@@ -845,16 +892,47 @@ function renderPlaceEdit(id) {
       <input type="text" id="pLatLng" inputmode="decimal" value="${p.lat != null ? `${p.lat}, ${p.lng}` : ''}" placeholder="例：36.40220, 138.24918">
       <div id="pPin" style="margin-top:10px"></div>
     </div>
-    <div class="section-title"><span>公式情報（任意・空欄は「未確認」と表示）</span></div>
+    ${T === 'michinoeki' ? `<div class="section-title"><span>公式情報（任意・空欄は「未確認」と表示）</span></div>
     <div class="field"><label for="pRegNo">登録番号</label><input type="text" id="pRegNo" value="${esc(p.regNo)}"></div>
     <div class="field"><label for="pRound">登録回</label><input type="text" id="pRound" value="${esc(p.regRound)}" placeholder="例：第65回"></div>
-    <div class="field"><label for="pRegDate">登録年月</label><input type="text" id="pRegDate" value="${esc(p.regDate)}" placeholder="例：R8.9"></div>
-    <div class="field"><label for="pUrl">公式サイト</label><input type="text" id="pUrl" inputmode="url" value="${esc(p.url)}"></div>
+    <div class="field"><label for="pRegDate">登録年月</label><input type="text" id="pRegDate" value="${esc(p.regDate)}" placeholder="例：R8.9"></div>` : ''}
+    <div class="field"><label for="pUrl">公式サイト（任意）</label><input type="text" id="pUrl" inputmode="url" value="${esc(p.url)}"></div>
     <div class="btn-row"><button class="btn" id="savePlace">保存</button></div>
-    ${p.source === 'manual' ? '<div class="btn-row"><button class="btn danger" id="delPlace">この道の駅を削除</button></div>'
+    ${p.source === 'manual' ? `<div class="btn-row"><button class="btn danger" id="delPlace">この${T === 'michinoeki' ? '道の駅' : '場所'}を削除</button></div>`
       : !isNew ? '<p class="hint">取り込みデータの駅は削除できません（更新時に戻るため）。閉鎖した駅は「状態」を閉鎖にしてください。</p>' : ''}
   `;
   const msg = $('#geoMsg', el), latlng = $('#pLatLng', el);
+  let stationRef = null;
+  const stQ = $('#stQ', el);
+  if (stQ) {
+    let timer;
+    stQ.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(async () => {
+      const box = $('#stRes', el);
+      try {
+        const hits = searchStations(await loadStations(), stQ.value);
+        box.innerHTML = hits.map((h, i) => `<button type="button" data-hit="${i}">${esc(h.name)}駅<span class="op">${esc(h.operator)}・${esc(h.line)}${h.taken ? '・登録済み' : ''}</span></button>`).join('')
+          || (stQ.value.trim() ? '<div class="hint">見つかりません。下の欄に直接入力してください。</div>' : '');
+        box.onclick = e => {
+          const b = e.target.closest('[data-hit]'); if (!b) return;
+          const h = hits[+b.dataset.hit];
+          $('#pName', el).value = h.name; $('#pOp', el).value = h.operator; $('#pLine', el).value = h.line;
+          latlng.value = `${h.lat}, ${h.lng}`; geo.precision = 'n02';
+          placePicker.show({ lat: h.lat, lng: h.lng });
+          const hint = $('#prefHint', el);
+          hint.textContent = '都道府県を調べています…';
+          prefFromLatLng(h).then(r => {
+            if (r.pref) $('#pPref', el).value = r.pref;
+            hint.textContent = r.pref ? (r.source === 'gsi' ? `位置から「${r.pref}」を設定しました。` : `近くの道の駅から「${r.pref}」と推定しました（県境付近は外れることがあります）。違っていれば選び直してください。`) : '都道府県を選んでください。';
+          });
+          stationRef = { name: h.name, operator: h.operator, line: h.line };
+          box.innerHTML = ''; stQ.value = '';
+          $('#stMsg', el).textContent = `「${h.name}駅（${h.operator}・${h.line}）」を入れました。`;
+        };
+      } catch (err) {
+        box.innerHTML = '<div class="hint">駅データを読み込めませんでした（通信できない場合など）。下の欄に直接入力してください。</div>';
+      }
+    }, 150); });
+  }
   latlng.addEventListener('input', () => {
     geo.precision = 'manual';
     const v = parseLatLng(latlng.value);
@@ -889,7 +967,8 @@ function renderPlaceEdit(id) {
     }
   };
   $('#savePlace', el).onclick = async () => {
-    const name = $('#pName', el).value.trim().replace(/^道の駅\s*/, '');
+    const name = T === 'michinoeki' ? $('#pName', el).value.trim().replace(/^道の駅\s*/, '')
+      : T === 'station' ? $('#pName', el).value.trim().replace(/駅$/, '') : $('#pName', el).value.trim();
     const pref = $('#pPref', el).value;
     if (!name) { toast('名前を入れてください'); return; }
     if (!pref) { toast('都道府県を選んでください'); return; }
@@ -901,20 +980,21 @@ function renderPlaceEdit(id) {
     const geoChanged = pos.lat !== p.lat || pos.lng !== p.lng;
     const now = Date.now();
     const rec = {
-      ...(isNew ? { id: 'u:' + uid(), type: 'michinoeki', source: 'manual', createdAt: now } : p),
+      ...(isNew ? { id: 'u:' + uid(), type: T, source: 'manual', createdAt: now } : p),
       name, nameKana: kataToHira($('#pKana', el).value.trim()), prefecture: pref,
       address: $('#pAddr', el).value.trim(), status: $('#pStatus', el).value,
-      regNo: $('#pRegNo', el).value.trim(), regRound: $('#pRound', el).value.trim(),
-      regDate: $('#pRegDate', el).value.trim(), url: $('#pUrl', el).value.trim(),
-      lat: pos.lat, lng: pos.lng, updatedAt: now,
+      url: $('#pUrl', el).value.trim(), lat: pos.lat, lng: pos.lng, updatedAt: now,
     };
+    if (T === 'michinoeki') Object.assign(rec, { regNo: $('#pRegNo', el).value.trim(), regRound: $('#pRound', el).value.trim(), regDate: $('#pRegDate', el).value.trim() });
+    if (T === 'station') Object.assign(rec, { operator: $('#pOp', el).value.trim(), line: $('#pLine', el).value.trim(), stationRef: stationRef || p.stationRef || null });
+    const pt = $('#pType', el); if (pt) rec.type = pt.value;
     if (geoChanged) rec.geoPrecision = pos.lat == null ? null : (geo.precision || 'manual');
     if (!isNew && p.source === 'import') rec.edited = true;
     delete rec._k;
     // 名前か位置を変えたときだけ重複を確かめる（取り込みデータには同名駅が元からあるため）
     if (isNew || name !== p.name || geoChanged) {
       const dup = findDuplicates(rec);
-      if (dup.length && !confirm(`似た道の駅がすでにあります。\n${dup.slice(0, 5).join('\n')}\n\nこのまま保存しますか？`)) return;
+      if (dup.length && !confirm(`似た${T === 'station' ? '駅' : T === 'michinoeki' ? '道の駅' : '場所'}がすでにあります。\n${dup.slice(0, 5).join('\n')}\n\nこのまま保存しますか？`)) return;
     }
     await db.put('places', rec);
     state.places.set(rec.id, rec);
@@ -925,7 +1005,8 @@ function renderPlaceEdit(id) {
   if (del) del.onclick = async () => {
     const n = state.byPlace.get(id)?.visits.length || 0, ns = state.byPlace.get(id)?.stamps.length || 0;
     const extra = [n && `訪問記録 ${n} 件`, ns && `スタンプ写真 ${ns} 枚`].filter(Boolean).join('・');
-    if (!confirm(extra ? `この道の駅と、${extra}を削除しますか？` : 'この道の駅を削除しますか？')) return;
+    const what = T === 'michinoeki' ? 'この道の駅' : `「${placeTitle(p)}」`;
+    if (!confirm(extra ? `${what}と、${extra}を削除しますか？` : `${what}を削除しますか？`)) return;
     await db.tx(['places', 'visits', 'stamps'], 'readwrite', t => {
       t.objectStore('places').delete(id);
       for (const v of state.visits) if (v.placeId === id) t.objectStore('visits').delete(v.id);
@@ -939,7 +1020,8 @@ function renderPlaceEdit(id) {
     toast('削除しました');
     go('/list');
   };
-  showView('placeEdit', isNew ? '道の駅を追加' : '道の駅を編集', { back: true });
+  const typeName = T === 'michinoeki' ? '道の駅' : T === 'station' ? '駅' : '場所';
+  showView('placeEdit', `${typeName}を${isNew ? '追加' : '編集'}`, { back: true });
   // 地図は画面を表示してから作る（非表示のまま作ると大きさを測れない）
   if (placePicker) placePicker.destroy();
   placePicker = pinPicker($('#pPin', el), {
@@ -1078,7 +1160,7 @@ function renderMapView() {
     L.circleMarker([p.lat, p.lng], { radius: 7, weight: 1.5, color: '#ffffff', fillColor: placeColor(p), fillOpacity: p.status === 'closed' ? 0.3 : 0.95 })
       .bindPopup(() => {
         const s = state.byPlace.get(p.id);
-        return `<b>${esc(p.name)}</b><br>${esc(p.address || p.prefecture || '')}<br>
+        return `<b>${esc(placeTitle(p))}</b><br>${esc(placeSub(p))}<br>
           ${s?.visited ? '訪問済み' : '未訪問'}${s?.stamp ? '・スタンプあり' : ''}${p.status && p.status !== 'open' ? '・' + STATUS_LABEL[p.status] : ''}
           ${state.here ? `・${fmtKm(distKm(state.here, p))}` : ''}<br><a href="#/place/${encodeURIComponent(p.id)}">詳しく見る ›</a>`;
       })
@@ -1089,7 +1171,7 @@ function renderMapView() {
   const noPos = arr.length - shown;
   const filtered = filters.q || filters.pref || filters.visit || filters.stamp;
   const dot = c => `<span style="color:${c}">●</span>`;
-  $('#mapInfo').innerHTML = `<span>${shown.toLocaleString()}駅${filtered ? '（絞り込み中）' : ''}${noPos ? `・位置なし${noPos}` : ''}</span>
+  $('#mapInfo').innerHTML = `<span>${shown.toLocaleString()}${filters.type === 'spot' ? '件' : '駅'}${filtered ? '（絞り込み中）' : ''}${noPos ? `・位置なし${noPos}` : ''}</span>
     <span class="legend">${dot('#8a8f8b')}未訪問 ${dot(cssVar('--accent'))}訪問 ${dot(cssVar('--stamp'))}スタンプ</span>`;
 }
 function drawHere() {
@@ -1110,7 +1192,7 @@ function drawMiniMap(p) {
   if (!box || p.lat == null) return;
   miniMap = makeMap(box, { scrollWheelZoom: false });
   const pts = [[p.lat, p.lng]];
-  L.marker([p.lat, p.lng]).bindPopup(`<b>${esc(p.name)}</b>`).addTo(miniMap);
+  L.marker([p.lat, p.lng]).bindPopup(`<b>${esc(placeTitle(p))}</b>`).addTo(miniMap);
   for (const st of state.byPlace.get(p.id)?.stamps || []) {
     if (st.stampSpotLat == null) continue;
     pts.push([st.stampSpotLat, st.stampSpotLng]);
@@ -1119,6 +1201,52 @@ function drawMiniMap(p) {
   }
   if (pts.length > 1) miniMap.fitBounds(pts, { padding: [30, 30], maxZoom: 17 }); else miniMap.setView(pts[0], 16);
   requestAnimationFrame(() => miniMap && miniMap.invalidateSize());
+}
+
+/* ---------- 駅データ（駅名の入力補助） ---------- */
+// 国土数値情報（鉄道データ）を加工した data/stations.json。駅の追加画面で初めて必要になったときに読み込む
+let stationsCache = null;
+async function loadStations() {
+  if (stationsCache) return stationsCache;
+  const res = await fetch(STATIONS_URL);
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  const d = await res.json();
+  stationsCache = { meta: d, rows: d.stations.map(r => ({ name: r[0], operator: d.operators[r[1]], line: d.lines[r[2]], lat: r[3], lng: r[4], kind: r[5], k: normQ(r[0]) })) };
+  return stationsCache;
+}
+// 1語目は駅名（前方一致を優先）、2語目以降は事業者・路線で絞る
+function searchStations(data, text) {
+  const terms = String(text).normalize('NFKC').trim().split(/\s+/).filter(Boolean);
+  if (!terms.length) return [];
+  const head = normQ(terms[0].replace(/駅$/, '')), rest = terms.slice(1).map(normQ);
+  const taken = new Set([...state.places.values()].filter(p => p.type === 'station').map(p => `${p.name}|${p.operator}|${p.line}`));
+  const hits = [];
+  for (const r of data.rows) {
+    if (!r.k.includes(head)) continue;
+    if (rest.length && !rest.every(t => normQ(r.operator + r.line).includes(t))) continue;
+    hits.push(r);
+  }
+  hits.sort((a, b) => (b.k.startsWith(head) - a.k.startsWith(head)) || (a.k === head ? -1 : b.k === head ? 1 : 0) || a.k.length - b.k.length);
+  return hits.slice(0, 12).map(r => ({ ...r, taken: taken.has(`${r.name}|${r.operator}|${r.line}`) }));
+}
+// 駅データに都道府県は無いので、駅を選んだときに国土地理院の逆ジオコーダで調べる（操作1回につき1リクエスト、
+// 送るのは駅の座標だけ）。使えないときは、いちばん近い道の駅の都道府県を候補にする
+async function prefFromLatLng(pt) {
+  try {
+    const res = await fetch(`https://mreversegeocoder.gsi.go.jp/reverse-geocoder/LonLatToAddress?lat=${pt.lat}&lon=${pt.lng}`);
+    const code = parseInt((await res.json())?.results?.muniCd?.slice(0, 2), 10);
+    if (code >= 1 && code <= 47) return { pref: PREFS[code - 1], source: 'gsi' };
+  } catch {}
+  return { pref: guessPref(pt), source: 'nearest' };
+}
+function guessPref(pt) {
+  let best = null, bd = Infinity;
+  for (const p of state.places.values()) {
+    if (p.type !== 'michinoeki' || p.lat == null) continue;
+    const d = distKm(pt, p);
+    if (d < bd) { bd = d; best = p; }
+  }
+  return best && bd < 60 ? best.prefecture : '';
 }
 
 /* ---------- スタンプ写真 ---------- */
@@ -1166,9 +1294,9 @@ function forgetUrls(st) {
 function stampTiles(list, withCaption = true) {
   return list.map(st => {
     const p = st.placeId ? state.places.get(st.placeId) : null;
-    return `<button class="tile" data-stamp="${esc(st.id)}" aria-label="${esc(p?.name || KIND_LABEL[st.kind])} ${fmtDate(st.takenDate)}">
+    return `<button class="tile" data-stamp="${esc(st.id)}" aria-label="${esc(placeTitle(p) || KIND_LABEL[st.kind])} ${fmtDate(st.takenDate)}">
       <img src="${blobUrl(st, 'thumb')}" alt="" loading="lazy" decoding="async">
-      ${withCaption ? `<span class="kind">${KIND_LABEL[st.kind] || ''}</span><span class="cap">${esc(p?.name || st.note || KIND_LABEL[st.kind])}</span>` : ''}
+      ${withCaption ? `<span class="kind">${KIND_LABEL[st.kind] || ''}</span><span class="cap">${esc(placeTitle(p) || st.note || KIND_LABEL[st.kind])}</span>` : ''}
     </button>`;
   }).join('');
 }
@@ -1233,8 +1361,8 @@ async function renderStampEdit(id) {
         <div class="chips" id="stKind">${Object.entries(KIND_LABEL).map(([k, l]) => `<button type="button" class="chip" data-kind="${k}" aria-pressed="${st.kind === k}">${l}</button>`).join('')}</div>
       </div>
       <div class="field"><div class="label">場所${st.kind === 'memorial' || st.kind === 'other' ? '（任意）' : ''}</div>
-        ${place ? `<div class="picked"><span class="nm">${esc(place.name)}<span class="note">　${esc(place.prefecture || '')}</span></span><button type="button" id="clearPlace">外す</button></div>`
-          : `<input type="search" id="placeQ" placeholder="道の駅の名前で探す" autocomplete="off" style="width:100%;min-height:48px;border:1px solid var(--line);border-radius:12px;background:var(--surface);padding:0 12px;font-size:16px">
+        ${place ? `<div class="picked"><span class="nm">${esc(placeTitle(place))}<span class="note">　${esc(place.prefecture || '')}</span></span><button type="button" id="clearPlace">外す</button></div>`
+          : `<input type="search" id="placeQ" placeholder="道の駅・駅・登録した場所の名前で探す" autocomplete="off" style="width:100%;min-height:48px;border:1px solid var(--line);border-radius:12px;background:var(--surface);padding:0 12px;font-size:16px">
              <div class="picker-results" id="placeRes"></div>`}
       </div>
       ${place ? `<div class="field"><label for="stVisit">訪問記録との紐づけ</label>
@@ -1260,7 +1388,7 @@ async function renderStampEdit(id) {
     if (q) q.oninput = () => {
       const n = normQ(q.value);
       const hits = n ? [...state.places.values()].filter(p => (p._k ??= searchKey(p)).includes(n)).slice(0, 8) : [];
-      $('#placeRes', el).innerHTML = hits.map(p => `<button type="button" data-pick="${esc(p.id)}">${esc(p.name)}<span class="note">　${esc(p.address || p.prefecture || '')}</span></button>`).join('');
+      $('#placeRes', el).innerHTML = hits.map(p => `<button type="button" data-pick="${esc(p.id)}">${esc(placeTitle(p))}<span class="note">　${esc(placeSub(p))}</span></button>`).join('');
     };
     const pr = $('#placeRes', el);
     if (pr) pr.onclick = e => {
@@ -1390,9 +1518,10 @@ async function renderSettings() {
       <p>同梱の道の駅データは <a href="https://opendatacommons.org/licenses/odbl/1-0/" target="_blank" rel="noopener">Open Database License (ODbL) 1.0</a> で提供しています（アプリのコードは MIT License）。</p>
       <p><b>駅名・よみ・所在地・登録回・登録年月・公式サイト</b>：<a href="https://www.mlit.go.jp/road/Michi-no-Eki/list.html" target="_blank" rel="noopener">国土交通省「道の駅」一覧</a>を加工して作成（<a href="https://www.mlit.go.jp/link.html" target="_blank" rel="noopener">公共データ利用規約 第1.0版</a>）。Excel 一覧から項目を抽出し、ふりがなをひらがなに変換して JSON にしました。</p>
       <p><b>位置</b>：© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors（ODbL 1.0）。名称に「道の駅」を含む地物を駅名・市町村で照合しました。照合できなかった駅には位置を含めていません。</p>
+      <p><b>駅名の入力補助</b>：「<a href="https://nlftp.mlit.go.jp/ksj/gml/datalist/KsjTmplt-N02-2024.html" target="_blank" rel="noopener">国土数値情報（鉄道データ）</a>」（国土交通省）を加工して作成（<a href="https://creativecommons.org/licenses/by/4.0/deed.ja" target="_blank" rel="noopener">CC BY 4.0</a>、2024年12月31日時点）。駅名・事業者・路線・駅の位置を抜き出して軽量化しました。登録した駅の情報は、この端末内にだけ保存されます。</p>
       <p><b>地図</b>：<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">国土地理院（地理院タイル・標準地図）</a>。地図の右下にも出典を表示しています。地図は表示のつど読み込み、オフライン用の一括保存はしません。地図ライブラリは <a href="https://leafletjs.com" target="_blank" rel="noopener">Leaflet</a>（BSD-2-Clause）。</p>
       <p><b>現在地</b>：「近い順」やピンの設定でボタンを押したときだけ取得し、端末の外には送りません。</p>
-      <p><b>住所からの座標取得</b>：国土地理院の住所検索を使います。ボタンを1回押すごとに1回だけ、入力した住所を送信します（自動の一括取得はしません）。取得した座標はこの端末内にだけ保存されます。</p>
+      <p><b>住所からの座標取得・駅の都道府県</b>：国土地理院の住所検索・逆ジオコーダを使います。ボタンを押したとき・駅を選んだときに1回だけ、入力した住所または選んだ駅の座標を送信します（自動の一括取得はしません）。取得した座標はこの端末内にだけ保存されます。</p>
       <p class="note">このアプリおよび加工データは、国土交通省・国土地理院が作成したものではありません。詳細はリポジトリの data/DATA_LICENSE.md を参照してください。</p>
     </div>
     <div class="card">

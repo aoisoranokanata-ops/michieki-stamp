@@ -1,4 +1,6 @@
-# データの出典と利用条件（data/michinoeki.json）
+# データの出典と利用条件（data/ 以下）
+
+# data/michinoeki.json（道の駅一覧）
 
 `data/michinoeki.json` は、以下のデータを `tools/convert.py` で加工・結合して作成したデータベースです。
 アプリのコード（MIT License）とは別の条件に従います。
@@ -36,3 +38,21 @@ OpenStreetMap で照合できなかった駅には座標を含めていません
 ```
 python tools/convert.py --refresh
 ```
+
+---
+
+# data/stations.json（駅名の入力補助）
+
+- 出典：「国土数値情報（鉄道データ）」（国土交通省）
+  https://nlftp.mlit.go.jp/ksj/gml/datalist/KsjTmplt-N02-2024.html
+  （2025年度版・2024年12月31日時点、N02-24）
+- 利用条件：**CC BY 4.0**（https://creativecommons.org/licenses/by/4.0/deed.ja）
+- **加工の内容**：駅データ（GeoJSON）から駅名・運営会社・路線名・事業者種別を抜き出し、
+  同じ駅名・事業者・路線の重複をまとめ、ホームを表す線の中間点を代表点とした。
+  JR 各社などの運営会社名は「JR東日本」のような一般的な呼び方に置き換えた。
+- 本データは国土交通省が作成したものではありません。
+- 作り直し：`python tools/convert_stations.py --refresh`
+
+アプリで駅を登録したときの内容（駅名・事業者・路線・位置・都道府県）は、利用者の端末内にだけ保存されます。
+都道府県は、駅を選んだときに国土地理院の逆ジオコーダ（座標→市区町村コード）へ駅の座標を1回だけ送って調べます。
+
