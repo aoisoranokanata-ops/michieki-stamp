@@ -6,6 +6,11 @@
 <meta name="theme-color" content="#2f6f4f">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="道の駅スタンプ">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="mobile-web-app-capable" content="yes">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <title>道の駅スタンプ帳</title>
 <link rel="stylesheet" href="vendor/leaflet/leaflet.css">
 <script src="vendor/leaflet/leaflet.js"></script>
@@ -190,6 +195,28 @@ nav.tabs button.on { color: var(--accent); font-weight: 700; }
 .bk-box .btn-row { margin-top: 10px; }
 .bk-box label { display: flex; gap: 8px; align-items: flex-start; padding: 8px 0; }
 .bk-box input[type=radio] { margin-top: 4px; width: 20px; height: 20px; flex: 0 0 auto; }
+.update-bar { position: fixed; left: 12px; right: 12px; bottom: calc(70px + var(--safe-b)); z-index: 40; display: flex; align-items: center; gap: 10px;
+  background: var(--text); color: var(--bg); border-radius: 14px; padding: 10px 12px 10px 16px; font-size: 14px; box-shadow: 0 4px 16px rgba(0,0,0,.2); }
+.update-bar span { flex: 1; }
+.update-bar button { border: 0; border-radius: 10px; height: 38px; padding: 0 14px; font-weight: 700; background: var(--accent); color: var(--accent-ink); }
+.stat-big { display: flex; align-items: baseline; gap: 6px; }
+.stat-big b { font-size: 34px; line-height: 1.1; }
+.stat-big span { color: var(--muted); }
+.bar { height: 10px; border-radius: 5px; background: var(--surface2); overflow: hidden; display: flex; }
+.bar i { display: block; height: 100%; background: var(--accent); }
+.bar i.s { background: var(--stamp); }
+.stat-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 12px; text-align: center; }
+.stat-grid div { background: var(--surface2); border-radius: 10px; padding: 8px 4px; }
+.stat-grid b { display: block; font-size: 20px; }
+.stat-grid span { font-size: 12px; color: var(--muted); }
+.pref-rows { display: flex; flex-direction: column; gap: 2px; }
+.pref-row { display: grid; grid-template-columns: 4.6em 1fr 5.2em; align-items: center; gap: 8px; border: 0; background: transparent; padding: 7px 2px; text-align: left; border-radius: 8px; font-size: 14px; }
+.pref-row:active { background: var(--surface2); }
+.pref-row .num { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); font-size: 13px; }
+.pref-row.done .nm::after { content: ' ★'; color: var(--star); }
+.year-rows { display: grid; grid-template-columns: auto 1fr auto; gap: 6px 10px; align-items: center; font-size: 14px; }
+.install-steps { margin: 6px 0 0; padding-left: 1.4em; font-size: 14px; }
+.install-steps li { margin: 4px 0; }
 .sr-file { position: fixed; left: -1000px; top: 0; width: 1px; height: 1px; opacity: 0; }
 .chips { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 4px; scrollbar-width: none; }
 .chips::-webkit-scrollbar { display: none; }
@@ -236,6 +263,7 @@ nav.tabs button.on { color: var(--accent); font-weight: 700; }
   <section class="view" id="v-list">
     <div id="loadBanner"></div>
     <div id="backupBanner"></div>
+    <div id="installBanner"></div>
     <div class="chips type-chips" id="typeChips"></div>
     <div class="search">
       <input id="q" type="search" placeholder="名前・よみ・市町村で検索" autocomplete="off" enterkeyhint="search">
@@ -270,6 +298,8 @@ nav.tabs button.on { color: var(--accent); font-weight: 700; }
 
   <!-- 訪問記録一覧 -->
   <section class="view" id="v-visits">
+    <div class="chips type-chips" id="recordChips"></div>
+    <div id="statsBox"></div>
     <ul class="list" id="visitList"></ul>
   </section>
 
@@ -297,17 +327,18 @@ nav.tabs button.on { color: var(--accent); font-weight: 700; }
   <button data-tab="list"><span class="ico">🏠</span>道の駅</button>
   <button data-tab="map"><span class="ico">🗺️</span>地図</button>
   <button data-tab="stamps"><span class="ico">📮</span>スタンプ帳</button>
-  <button data-tab="visits"><span class="ico">📝</span>訪問記録</button>
+  <button data-tab="visits"><span class="ico">📊</span>記録</button>
   <button data-tab="settings"><span class="ico">⚙️</span>設定</button>
 </nav>
 <div class="toast" id="toast"></div>
+<div class="update-bar" id="updateBar" hidden><span>新しい版があります</span><button id="updateBtn">更新する</button></div>
 <!-- iOS では display:none の input を click() すると開かない版があるため、見えない状態で置いておく -->
 <input type="file" id="photoInput" accept="image/*" class="sr-file" tabindex="-1" aria-hidden="true">
 <input type="file" id="zipInput" accept=".zip,application/zip,application/x-zip-compressed" class="sr-file" tabindex="-1" aria-hidden="true">
 
 <script>
 'use strict';
-const APP_VERSION = '0.5.0';
+const APP_VERSION = '0.6.0';   // sw.js の VERSION とそろえる
 const APP_KEY = 'michieki-stamp';           // DB名・localStorageキーの接頭辞（github.io は他アプリと同一オリジン）
 const DATA_URL = 'data/michinoeki.json';
 // 評価項目の初期値。実際の項目は meta ストアの ratingItems（設定画面で増減・改名・並べ替え・非表示）
@@ -415,6 +446,9 @@ const state = {
   stamps: [],             // 全スタンプ記録（photo/thumb は Blob）
   pending: null,          // 選んだ直後でまだ保存していない写真 {file, placeId, visitId}
   stampKind: '',          // スタンプ帳の絞り込み
+  recordTab: 'stats',     // 記録タブ：stats / list
+  statsSort: 'pref',      // 都道府県別の並び：pref / rate / count
+  installPrompt: null,    // Android 等の beforeinstallprompt
   here: null,             // 現在地 {lat, lng, acc, at}（保存はせず、開いている間だけ持つ）
   lastBackup: null,       // meta 'lastBackup' {at, name, counts}
   backup: null,           // 作成済みでまだ保存していない ZIP {blob, name, manifest}
@@ -557,7 +591,7 @@ function route() {
   if (a === 'visit' && b) return renderVisitForm(b);
   if (a === 'place-new') return renderPlaceEdit(null);
   if (a === 'place-edit' && b) return renderPlaceEdit([b, ...rest].join('/'));
-  if (a === 'visits') { renderVisits(); return showView('visits', '訪問記録'); }
+  if (a === 'visits') { renderVisits(); return showView('visits', '記録・統計'); }
   if (a === 'stamps') { renderStamps(); return showView('stamps', 'スタンプ帳', { action: { label: '＋追加', fn: () => pickPhoto({}) } }); }
   if (a === 'stamp-new') return renderStampEdit(null);
   if (a === 'map') return renderMapView();
@@ -661,6 +695,7 @@ function renderList() {
         : '条件に合う場所がありません'}</li>`;
   renderHereLine();
   renderBackupBanner();
+  renderInstallBanner();
   $('#moreBtn').hidden = arr.length <= state.listLimit;
   $('#moreBtn').textContent = `もっと表示（残り ${(arr.length - state.listLimit).toLocaleString()} 件）`;
 }
@@ -1492,9 +1527,86 @@ async function renderStampEdit(id) {
 
 /* ---------- 訪問記録一覧 ---------- */
 function renderVisits() {
+  $('#recordChips').innerHTML = [['stats', '統計'], ['list', '訪問一覧']]
+    .map(([k, l]) => `<button class="chip" data-rt="${k}" aria-pressed="${state.recordTab === k}">${l}</button>`).join('');
+  $('#recordChips').onclick = e => {
+    const b = e.target.closest('[data-rt]'); if (!b) return;
+    state.recordTab = b.dataset.rt; ls.set('recordTab', state.recordTab); renderVisits();
+  };
+  const isStats = state.recordTab === 'stats';
+  $('#statsBox').hidden = !isStats; $('#visitList').hidden = isStats;
+  if (isStats) { renderStats(); return; }
   const arr = [...state.visits].sort((a, b) => b.visitedDate.localeCompare(a.visitedDate) || b.createdAt - a.createdAt);
   $('#visitList').innerHTML = arr.length ? arr.map(v => visitItemHtml(v, true)).join('')
     : '<li class="empty">まだ訪問記録がありません。<br>「道の駅」タブから場所を選んで記録できます。</li>';
+}
+
+/* ---------- 統計 ---------- */
+function renderStats() {
+  const pct = (a, b) => b ? Math.round(a / b * 1000) / 10 : 0;
+  const all = [...state.places.values()];
+  // 道の駅の分母は「閉鎖」以外（取り込み＋手動追加）。休止中は数に入れる
+  const eki = all.filter(p => p.type === 'michinoeki' && isActive(p));
+  const st = p => state.byPlace.get(p.id);
+  const ekiVisited = eki.filter(p => st(p)?.visited).length, ekiStamp = eki.filter(p => st(p)?.stamp).length;
+  const visitCount = state.visits.filter(v => v.visited).length;
+  const visitedOf = g => all.filter(p => groupOf(p) === g && st(p)?.visited).length;
+  const stampsBy = k => state.stamps.filter(x => x.kind === k).length;
+  // 都道府県別
+  const rows = PREFS.map((pref, i) => {
+    const ps = eki.filter(p => p.prefecture === pref);
+    const v = ps.filter(p => st(p)?.visited).length, sp = ps.filter(p => st(p)?.stamp).length;
+    return { pref, i, total: ps.length, v, sp, rate: pct(v, ps.length) };
+  });
+  const sorted = [...rows].sort(state.statsSort === 'rate' ? (a, b) => b.rate - a.rate || b.v - a.v || a.i - b.i
+    : state.statsSort === 'count' ? (a, b) => b.v - a.v || b.rate - a.rate || a.i - b.i : (a, b) => a.i - b.i);
+  const done = rows.filter(r => r.total && r.v === r.total).length;
+  // 年別の訪問回数
+  const years = {};
+  for (const v of state.visits) if (v.visited) years[v.visitedDate.slice(0, 4)] = (years[v.visitedDate.slice(0, 4)] || 0) + 1;
+  const ys = Object.entries(years).sort((a, b) => b[0].localeCompare(a[0]));
+  const ymax = Math.max(1, ...ys.map(y => y[1]));
+
+  $('#statsBox').innerHTML = `
+    <div class="card">
+      <div class="note">道の駅の達成率</div>
+      <div class="stat-big"><b>${pct(ekiVisited, eki.length)}%</b><span>${ekiVisited.toLocaleString()} / ${eki.length.toLocaleString()} 駅を訪問</span></div>
+      <div class="bar" style="margin:8px 0 4px"><i style="width:${pct(ekiVisited, eki.length)}%"></i></div>
+      <div class="note">スタンプ取得 ${ekiStamp.toLocaleString()} 駅（${pct(ekiStamp, eki.length)}%）・全駅訪問した都道府県 ${done}</div>
+      <div class="stat-grid">
+        <div><b>${visitCount}</b><span>訪問回数</span></div>
+        <div><b>${visitedOf('station')}</b><span>訪問した駅</span></div>
+        <div><b>${visitedOf('spot')}</b><span>記念・その他</span></div>
+        <div><b>${state.stamps.length}</b><span>スタンプ写真</span></div>
+        <div><b>${stampsBy('michinoeki')}</b><span>うち道の駅</span></div>
+        <div><b>${stampsBy('station')}</b><span>うち駅</span></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="section-title" style="margin-top:0"><span>都道府県別（道の駅）</span>
+        <select id="statsSort" aria-label="並び順" style="height:34px;border-radius:17px;border:1px solid var(--line);background:var(--surface);padding:0 10px;font-size:13px">
+          <option value="pref"${state.statsSort === 'pref' ? ' selected' : ''}>都道府県順</option>
+          <option value="rate"${state.statsSort === 'rate' ? ' selected' : ''}>達成率順</option>
+          <option value="count"${state.statsSort === 'count' ? ' selected' : ''}>訪問数順</option>
+        </select></div>
+      <div class="note" style="margin-bottom:6px">緑＝訪問、朱＝そのうちスタンプ取得。タップするとその都道府県の一覧を開きます。★は全駅訪問。</div>
+      <div class="pref-rows">${sorted.map(r => `
+        <button class="pref-row${r.total && r.v === r.total ? ' done' : ''}" data-pref="${r.pref}">
+          <span class="nm">${r.pref.replace(/(都|府|県)$/, '') || r.pref}</span>
+          <span class="bar">${r.sp ? `<i class="s" style="width:${pct(r.sp, r.total)}%"></i>` : ''}<i style="width:${pct(r.v - r.sp, r.total)}%"></i></span>
+          <span class="num">${r.v}/${r.total}</span>
+        </button>`).join('')}</div>
+    </div>
+    ${ys.length ? `<div class="card"><div class="section-title" style="margin-top:0"><span>年ごとの訪問回数</span></div>
+      <div class="year-rows">${ys.map(([y, n]) => `<span>${y}年</span><span class="bar"><i style="width:${n / ymax * 100}%"></i></span><span>${n}回</span>`).join('')}</div></div>` : ''}
+  `;
+  $('#statsSort').onchange = e => { state.statsSort = e.target.value; ls.set('statsSort', state.statsSort); renderStats(); };
+  $('#statsBox .pref-rows').onclick = e => {
+    const b = e.target.closest('[data-pref]'); if (!b) return;
+    filters.type = 'michinoeki'; filters.pref = b.dataset.pref; filters.q = ''; $('#q').value = '';
+    $('#fPref').value = filters.pref; renderTypeChips(); ls.set('filters', filters); state.listLimit = 80;
+    go('/list');
+  };
 }
 
 /* ---------- バックアップ（ZIP 書き出し・読み込み） ---------- */
@@ -1696,6 +1808,64 @@ function renderBackupCard() {
   };
 }
 
+/* ---------- ホーム画面への追加（PWA） ---------- */
+const isStandalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+const isIOS = () => /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+function installCardHtml() {
+  if (isStandalone()) return `<div class="card"><h3>ホーム画面のアプリ</h3><p>ホーム画面から起動しています。通信できない場所でも記録できます（地図の画像は通信できるときだけ表示）。</p></div>`;
+  return `<div class="card" id="installCard"><h3>ホーム画面に追加しましょう</h3>
+    <p>ホーム画面に追加すると、アプリのように起動でき、通信できない場所でも記録できます。iPhone では、ブラウザのデータが消されにくくもなります。</p>
+    ${isIOS() ? `<ol class="install-steps"><li>Safari でこのページを開く</li><li>画面下の共有ボタン（□に↑）をタップ</li><li>「ホーム画面に追加」→「追加」</li></ol>`
+      : state.installPrompt ? '<div class="btn-row"><button class="btn" id="installBtn">ホーム画面に追加（インストール）</button></div>'
+      : '<p class="note">ブラウザのメニューから「ホーム画面に追加」または「アプリをインストール」を選んでください。</p>'}
+  </div>`;
+}
+// iPhone の Safari で開いているときは、一覧の上にも一度だけ案内を出す（閉じたら出さない）
+function renderInstallBanner() {
+  const box = $('#installBanner');
+  if (isStandalone() || !isIOS() || ls.get('installHintClosed', false)) { box.innerHTML = ''; return; }
+  box.innerHTML = `<div class="banner warn" style="background:var(--accent-soft);color:var(--accent)"><span>ホーム画面に追加すると、アプリのように使え、記録も消えにくくなります。</span>
+    <button id="ibHow" style="background:var(--accent);color:var(--accent-ink)">追加のしかた</button><button class="later" id="ibClose" style="color:var(--accent)">閉じる</button></div>`;
+  $('#ibHow').onclick = () => go('/settings');
+  $('#ibClose').onclick = () => { ls.set('installHintClosed', true); renderInstallBanner(); };
+}
+function bindInstall() {
+  const b = $('#installBtn');
+  if (b) b.onclick = async () => {
+    const p = state.installPrompt; state.installPrompt = null;
+    p.prompt();
+    const r = await p.userChoice;
+    if (r.outcome === 'accepted') toast('インストールしました');
+    renderSettings();
+  };
+}
+window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); state.installPrompt = e; if (currentView === 'settings') renderSettings(); });
+
+/* ---------- Service Worker（オフライン対応・更新の知らせ） ---------- */
+function registerSW() {
+  if (!('serviceWorker' in navigator)) return;
+  const hadController = !!navigator.serviceWorker.controller;   // 初回インストール時は更新の知らせも再読み込みもしない
+  navigator.serviceWorker.register('sw.js').then(reg => {
+    const offer = w => {
+      if (!hadController || !w) return;
+      $('#updateBar').hidden = false;
+      $('#updateBtn').onclick = () => { $('#updateBtn').disabled = true; w.postMessage('skipWaiting'); };
+    };
+    if (reg.waiting) offer(reg.waiting);
+    reg.addEventListener('updatefound', () => {
+      const w = reg.installing;
+      w && w.addEventListener('statechange', () => { if (w.state === 'installed') offer(w); });
+    });
+    // 開いたままでも時々更新を確かめる
+    setInterval(() => reg.update().catch(() => {}), 60 * 60 * 1000);
+  }).catch(() => {});
+  let reloading = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadController || reloading) return;
+    reloading = true; location.reload();
+  });
+}
+
 /* ---------- 設定・情報 ---------- */
 async function renderSettings() {
   const meta = await db.get('meta', 'dataVersion');
@@ -1706,6 +1876,7 @@ async function renderSettings() {
   const edited = all.filter(p => p.edited).length;
   const missing = all.filter(p => p.missingFromSource).length;
   $('#v-settings').innerHTML = `
+    ${installCardHtml()}
     <div class="card" id="backupCard"></div>
     <div class="card">
       <h3>評価項目</h3>
@@ -1741,11 +1912,13 @@ async function renderSettings() {
     </div>
     <div class="card">
       <h3>このアプリについて</h3>
-      <p>道の駅スタンプ帳 v${APP_VERSION}</p>
+      <p>道の駅スタンプ帳 v${APP_VERSION}（<a href="https://github.com/aoisoranokanata-ops/michieki-stamp" target="_blank" rel="noopener">ソースコード</a>・MIT License）</p>
+      <p class="note">使用ライブラリ：Leaflet 1.9.4（BSD-2-Clause）、JSZip 3.10.1（MIT）。アイコンの文字は BIZ UD明朝（SIL Open Font License）。</p>
       <p class="note">記録はこの端末のブラウザ内だけに保存され、外部には送信されません。</p>
     </div>
   `;
   renderBackupCard();
+  bindInstall();
   const list = $('#riList');
   const rerender = async () => { await saveRatingItems(); renderSettings(); };
   list.addEventListener('change', async e => {
@@ -1798,6 +1971,8 @@ async function boot() {
   const [places, visits, stamps] = await Promise.all([db.all('places'), db.all('visits'), db.all('stamps')]);
   state.stamps = stamps;
   state.stampKind = ls.get('stampKind', '');
+  state.recordTab = ls.get('recordTab', 'stats');
+  state.statsSort = ls.get('statsSort', 'pref');
   places.forEach(p => state.places.set(p.id, p));
   state.visits = visits;
   reindexVisits();
@@ -1807,6 +1982,7 @@ async function boot() {
   const changed = await syncImportData();
   if (changed || currentView === 'list') route();
 
+  registerSW();
   // iOS などでストレージが消されにくくなるよう永続化を要求
   if (navigator.storage?.persist) navigator.storage.persisted().then(ok => ok || navigator.storage.persist()).catch(() => {});
 }
