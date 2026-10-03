@@ -199,6 +199,7 @@ nav.tabs button.on { color: var(--accent); font-weight: 700; }
   background: var(--text); color: var(--bg); border-radius: 14px; padding: 10px 12px 10px 16px; font-size: 14px; box-shadow: 0 4px 16px rgba(0,0,0,.2); }
 .update-bar span { flex: 1; }
 .update-bar button { border: 0; border-radius: 10px; height: 38px; padding: 0 14px; font-weight: 700; background: var(--accent); color: var(--accent-ink); }
+.update-bar button.close { background: transparent; color: var(--bg); padding: 0 6px; font-size: 18px; }
 .stat-big { display: flex; align-items: baseline; gap: 6px; }
 .stat-big b { font-size: 34px; line-height: 1.1; }
 .stat-big span { color: var(--muted); }
@@ -331,14 +332,14 @@ nav.tabs button.on { color: var(--accent); font-weight: 700; }
   <button data-tab="settings"><span class="ico">⚙️</span>設定</button>
 </nav>
 <div class="toast" id="toast"></div>
-<div class="update-bar" id="updateBar" hidden><span>新しい版があります</span><button id="updateBtn">更新する</button></div>
+<div class="update-bar" id="updateBar" hidden><span>新しい版があります</span><button id="updateBtn">読み込み直す</button><button id="updateClose" class="close" aria-label="閉じる">✕</button></div>
 <!-- iOS では display:none の input を click() すると開かない版があるため、見えない状態で置いておく -->
 <input type="file" id="photoInput" accept="image/*" class="sr-file" tabindex="-1" aria-hidden="true">
 <input type="file" id="zipInput" accept=".zip,application/zip,application/x-zip-compressed" class="sr-file" tabindex="-1" aria-hidden="true">
 
 <script>
 'use strict';
-const APP_VERSION = '0.6.1';   // sw.js の VERSION とそろえる
+const APP_VERSION = '0.6.2';   // sw.js の VERSION とそろえる
 const APP_KEY = 'michieki-stamp';           // DB名・localStorageキーの接頭辞（github.io は他アプリと同一オリジン）
 const DATA_URL = 'data/michinoeki.json';
 // 評価項目の初期値。実際の項目は meta ストアの ratingItems（設定画面で増減・改名・並べ替え・非表示）
@@ -1844,35 +1845,34 @@ window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); state.
 /* ---------- Service Worker（オフライン対応・更新の知らせ） ---------- */
 function registerSW() {
   if (!('serviceWorker' in navigator)) return;
-  const hadController = !!navigator.serviceWorker.controller;   // 初回インストール時は更新の知らせも再読み込みもしない
-  let reloading = false;
+  const hadController = !!navigator.serviceWorker.controller;   // 初回インストール時は知らせを出さない
   navigator.serviceWorker.register('sw.js').then(reg => {
-    const offer = w => {
-      if (!hadController || !w) return;
-      $('#updateBar').hidden = false;
-      $('#updateBtn').onclick = () => {
-        const btn = $('#updateBtn');
-        btn.disabled = true; btn.textContent = '更新中…';
-        // 押した時点で待機している版に切り替えを頼む（バーを出した後に状態が変わっていることがあるので取り直す）
-        const waiting = reg.waiting || (w.state === 'installed' ? w : null);
-        if (waiting) waiting.postMessage('skipWaiting');
-        // iPhone のホーム画面アプリでは controllerchange が届かないことがあるため、少し待って必ず読み直す。
-        // アプリ本体はネットワーク優先なので、読み直せば最新の版になる
-        setTimeout(() => { reloading = true; location.reload(); }, waiting ? 1500 : 0);
-      };
-    };
-    if (reg.waiting) offer(reg.waiting);
-    reg.addEventListener('updatefound', () => {
-      const w = reg.installing;
-      w && w.addEventListener('statechange', () => { if (w.state === 'installed') offer(w); });
-    });
+    // 以前の版（v0.6.1 まで）で「待機中」のまま残った Service Worker があれば切り替えを頼む
+    if (reg.waiting) reg.waiting.postMessage('skipWaiting');
     // 開いたままでも時々更新を確かめる
     setInterval(() => reg.update().catch(() => {}), 60 * 60 * 1000);
   }).catch(() => {});
-  navigator.serviceWorker.addEventListener('controllerchange', () => {
-    if (!hadController || reloading) return;
-    reloading = true; location.reload();
+  // 新しい版に切り替わったら、開いている画面が古いときだけ知らせる。
+  // ボタンは画面を読み直すだけ（Service Worker とのやりとりに頼らない）
+  navigator.serviceWorker.addEventListener('controllerchange', async () => {
+    if (!hadController) return;
+    // 切り替わった直後は古い版の保存データもまだ残っているので、版番号を比べて「この画面より新しい版」があるときだけ出す
+    const keys = await caches.keys().catch(() => []);
+    const vers = keys.filter(k => k.startsWith(APP_KEY + '-')).map(k => k.slice(APP_KEY.length + 1));
+    if (vers.some(v => cmpVersion(v, APP_VERSION) > 0)) showUpdateBar();
   });
+}
+function cmpVersion(a, b) {
+  const pa = String(a).split('.').map(n => parseInt(n, 10) || 0), pb = String(b).split('.').map(n => parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) - (pb[i] || 0);
+  return 0;
+}
+function showUpdateBar() {
+  const bar = $('#updateBar');
+  bar.hidden = false;
+  $('#updateBtn').disabled = false;
+  $('#updateBtn').onclick = () => { $('#updateBtn').disabled = true; location.reload(); };
+  $('#updateClose').onclick = () => { bar.hidden = true; };
 }
 
 /* ---------- 設定・情報 ---------- */

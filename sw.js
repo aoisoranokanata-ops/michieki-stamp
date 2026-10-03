@@ -1,7 +1,7 @@
 // 道の駅スタンプ帳 Service Worker
 // github.io は他のアプリと同じオリジンなので、キャッシュ名に接頭辞を付け、消すのも自分のものだけにする。
 // VERSION は index.html の APP_VERSION と必ずそろえて上げる。
-const VERSION = '0.6.1';
+const VERSION = '0.6.2';
 const PREFIX = 'michieki-stamp-';
 const CACHE = PREFIX + VERSION;
 
@@ -27,6 +27,10 @@ const PRECACHE = [
 ];
 
 self.addEventListener('install', event => {
+  // 待機させずにすぐ新しい版へ切り替える。iPhone（Safari・ホーム画面アプリ）では、待機中の版へ
+  // メッセージを送っても切り替わらず、待機のまま残り続けることがあったため。
+  // アプリ本体はネットワーク優先で読むので、開いている画面とずれても困らない
+  self.skipWaiting();
   // GitHub Pages は max-age=600 を返すので、HTTP キャッシュを通さず取り直す（新しい版に古いファイルが混ざらないように）
   event.waitUntil(caches.open(CACHE).then(c => c.addAll(PRECACHE.map(u => new Request(u, { cache: 'reload' })))));
 });
@@ -39,7 +43,7 @@ self.addEventListener('activate', event => {
   })());
 });
 
-// 画面の「更新する」ボタンから呼ばれる
+// 以前の版（待機方式）で待機したまま残った端末向け
 self.addEventListener('message', event => {
   if (event.data === 'skipWaiting') self.skipWaiting();
 });
