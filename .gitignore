@@ -1,0 +1,23 @@
+# OS / エディタ
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+
+# 依存・環境
+node_modules/
+.env
+.env.*
+__pycache__/
+
+# バックアップ・個人データ（絶対にコミットしない）
+*.zip
+backup/
+backups/
+photos/
+private/
+
+# 変換作業用の取得物（元データは convert.py --refresh で取り直せる）
+tools/raw/
+
