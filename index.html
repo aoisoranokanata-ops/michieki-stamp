@@ -158,6 +158,15 @@ nav.tabs button.on { color: var(--accent); font-weight: 700; }
 .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 .banner { background: var(--stamp-soft); color: var(--stamp); border-radius: 12px; padding: 10px 12px; font-size: 14px; margin-bottom: 10px; }
 .settings p { margin: 6px 0; font-size: 14px; }
+.ri-list { list-style: none; margin: 10px 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.ri { display: flex; gap: 4px; align-items: center; }
+.ri input { flex: 1; min-width: 0; height: 44px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); padding: 0 10px; font-size: 16px; }
+.ri button { height: 44px; min-width: 40px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface2); font-size: 14px; padding: 0 8px; }
+.ri button:disabled { opacity: .35; }
+.ri.off input { color: var(--muted); text-decoration: line-through; }
+.ri-add { display: flex; gap: 8px; }
+.ri-add input { flex: 1; min-width: 0; height: 48px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); padding: 0 12px; font-size: 16px; }
+.ri-add .btn { width: auto; }
 .settings h3 { font-size: 15px; margin: 0 0 8px; }
 </style>
 </head>
@@ -220,10 +229,18 @@ nav.tabs button.on { color: var(--accent); font-weight: 700; }
 
 <script>
 'use strict';
-const APP_VERSION = '0.1.0';
+const APP_VERSION = '0.1.1';
 const APP_KEY = 'michieki-stamp';           // DB名・localStorageキーの接頭辞（github.io は他アプリと同一オリジン）
 const DATA_URL = 'data/michinoeki.json';
-const RATING_ITEMS = [['food', '食'], ['view', '景色'], ['facility', '設備'], ['stamp', 'スタンプ']];
+// 評価項目の初期値。実際の項目は meta ストアの ratingItems（設定画面で増減・改名・並べ替え・非表示）
+const DEFAULT_RATING_ITEMS = [['food', '食'], ['view', '景色'], ['facility', '設備'], ['stamp', 'スタンプ']]
+  .map(([key, label]) => ({ key, label, hidden: false }));
+const STATUS_LABEL = { open: '営業中', suspended: '休止中', closed: '閉鎖' };
+const GEO_LABEL = {
+  osm: 'OpenStreetMap の登録地点', city: '市町村の代表点（概略）', address: '住所から取得',
+  'address-rough': '住所から取得（町名レベル以上の概略）', manual: '手入力',
+};
+const GSI_SEARCH = 'https://msearch.gsi.go.jp/address-search/AddressSearch?q=';
 const PREFS = ['北海道','青森県','岩手県','宮城県','秋田県','山形県','福島県','茨城県','栃木県','群馬県','埼玉県','千葉県','東京都','神奈川県','新潟県','富山県','石川県','福井県','山梨県','長野県','岐阜県','静岡県','愛知県','三重県','滋賀県','京都府','大阪府','兵庫県','奈良県','和歌山県','鳥取県','島根県','岡山県','広島県','山口県','徳島県','香川県','愛媛県','高知県','福岡県','佐賀県','長崎県','熊本県','大分県','宮崎県','鹿児島県','沖縄県'];
 
 /* ---------- 小物 ---------- */
@@ -235,6 +252,12 @@ const kataToHira = s => s.replace(/[ァ-ヶ]/g, c => String.fromCharCode(c.charC
 const normQ = s => kataToHira(String(s ?? '').normalize('NFKC').toLowerCase()).replace(/[\s・･]/g, '');
 const starsText = n => n ? '★'.repeat(n) + '☆'.repeat(5 - n) : '';
 const fmtDate = d => d ? d.replace(/-/g, '/') : '';
+const unconfirmed = v => v ? esc(v) : '<span class="note">未確認</span>';
+function distKm(a, b) {
+  const r = Math.PI / 180, dLat = (b.lat - a.lat) * r, dLng = (b.lng - a.lng) * r;
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * r) * Math.cos(b.lat * r) * Math.sin(dLng / 2) ** 2;
+  return 12742 * Math.asin(Math.sqrt(h));
+}
 const ls = {
   get(k, d) { try { const v = localStorage.getItem(`${APP_KEY}:${k}`); return v == null ? d : JSON.parse(v); } catch { return d; } },
   set(k, v) { try { localStorage.setItem(`${APP_KEY}:${k}`, JSON.stringify(v)); } catch {} },
@@ -296,7 +319,25 @@ const state = {
   visits: [],             // 全訪問記録
   byPlace: new Map(),     // placeId -> {visits:[], visited, stamp, last}
   listLimit: 80,
+  ratingItems: [],        // [{key, label, hidden}] 表示順
 };
+
+/* 評価項目。記録側は [{key, label, value}] の配列で持ち、表示名は key で設定から引く（改名・削除しても過去の値は壊れない） */
+async function loadRatingItems() {
+  const m = await db.get('meta', 'ratingItems');
+  state.ratingItems = m?.items?.length ? m.items : DEFAULT_RATING_ITEMS.map(i => ({ ...i }));
+}
+function saveRatingItems() { return db.put('meta', { key: 'ratingItems', items: state.ratingItems }); }
+function detailsArray(v) {
+  const d = v.ratingDetails;
+  if (Array.isArray(d)) return d;
+  if (d && typeof d === 'object') {   // 初期の試作版 {food: 4} 形式を読み替える
+    return Object.entries(d).map(([key, value]) => ({ key, label: DEFAULT_RATING_ITEMS.find(i => i.key === key)?.label || key, value }));
+  }
+  return [];
+}
+function ratingLabel(d) { return state.ratingItems.find(i => i.key === d.key)?.label || d.label || d.key; }
+const isActive = p => p.status !== 'closed';
 
 function reindexVisits() {
   state.byPlace = new Map();
@@ -316,7 +357,11 @@ function searchKey(p) {
 }
 
 /* ---------- 道の駅データの取り込み ---------- */
-// 同梱 JSON の版が変わったら差分で更新する。訪問記録・手動追加分・利用者が直した位置は残す
+// 同梱 JSON の版が変わったら取り込み直す。
+//  - 新しい駅は追加する
+//  - 利用者が手動追加・編集した駅（source:'manual' / edited:true）は一切上書き・削除しない
+//  - 手を入れていない取り込み駅だけ、最新データ（よみ・位置など）で更新する
+//  - 一覧から消えた駅は削除せず missingFromSource の印だけ付ける（記録が紐づいている可能性があるため）
 async function syncImportData() {
   let data;
   try {
@@ -330,26 +375,43 @@ async function syncImportData() {
   const meta = await db.get('meta', 'dataVersion');
   if (meta && meta.value === data.version && state.places.size > 0) return false;
 
+  // 手動追加済みの駅が後から公式一覧に載った場合、二重登録にしない（同じ都道府県・同じ名前なら同一とみなす）
+  const manualByName = new Map(), linked = new Set();
+  for (const p of state.places.values()) {
+    if (p.source !== 'manual') continue;
+    manualByName.set(p.prefecture + '|' + normQ(p.name), p);
+    if (p.importId) linked.add(p.importId);
+  }
   const incoming = new Set();
   await db.tx(['places'], 'readwrite', t => {
     const store = t.objectStore('places');
     data.places.forEach((r, ord) => {
       incoming.add(r.id);
+      const pref = data.prefs[r.pref - 1];
       const old = state.places.get(r.id);
+      if (old && (old.edited || old.source === 'manual')) {
+        if (old.missingFromSource) { old.missingFromSource = false; store.put(old); }
+        return;
+      }
+      if (!old) {
+        if (linked.has(r.id)) return;
+        const m = manualByName.get(pref + '|' + normQ(r.name));
+        if (m) { m.importId = r.id; store.put(m); return; }
+      }
       const p = {
-        ...(old || {}),
-        id: r.id, type: 'michinoeki', source: 'import',
-        name: r.name, nameKana: r.kana, prefecture: data.prefs[r.pref - 1], address: r.addr,
-        regRound: r.round, regDate: (r.reg || '').trim(), url: r.url || '', closed: false, ord,
+        status: 'open', regNo: '', createdAt: Date.now(), ...(old || {}),
+        id: r.id, type: 'michinoeki', source: 'import', edited: false, missingFromSource: false, ord,
+        name: r.name, nameKana: r.kana, prefecture: pref, address: r.addr,
+        regRound: r.round, regDate: (r.reg || '').trim(), url: r.url || '',
+        lat: r.lat ?? null, lng: r.lng ?? null, geoPrecision: r.prec,
       };
-      if (!old || !old.geoUserSet) { p.lat = r.lat ?? null; p.lng = r.lng ?? null; p.geoPrecision = r.prec; }
+      delete p._k;
       store.put(p);
       state.places.set(p.id, p);
     });
-    // 一覧から消えた駅は削除せず「登録抹消・閉鎖」扱いにする（記録が紐づいている可能性があるため）
     for (const p of state.places.values()) {
-      if (p.source === 'import' && p.type === 'michinoeki' && !incoming.has(p.id) && !p.closed) {
-        p.closed = true; store.put(p);
+      if (p.source === 'import' && !incoming.has(p.id) && !p.missingFromSource) {
+        p.missingFromSource = true; store.put(p);
       }
     }
   });
@@ -441,7 +503,7 @@ function filteredPlaces() {
 function badgesHtml(p) {
   const s = state.byPlace.get(p.id);
   let h = '';
-  if (p.closed) h += '<span class="badge n">閉鎖?</span>';
+  if (p.status && p.status !== 'open') h += `<span class="badge n">${STATUS_LABEL[p.status]}</span>`;
   if (s?.stamp) h += '<span class="badge s">スタンプ</span>';
   if (s?.visited) h += `<span class="badge v">訪問${s.visits.filter(v => v.visited).length > 1 ? '×' + s.visits.filter(v => v.visited).length : ''}</span>`;
   return h;
@@ -451,7 +513,7 @@ function renderList() {
   for (const el of ['#fPref', '#fVisit', '#fStamp']) $(el).classList.toggle('set', !!$(el).value);
   $('#qClear').hidden = !filters.q;
   const arr = filteredPlaces();
-  const total = [...state.places.values()].filter(p => p.type === 'michinoeki' && !p.closed);
+  const total = [...state.places.values()].filter(p => p.type === 'michinoeki' && isActive(p));
   const visited = total.filter(p => state.byPlace.get(p.id)?.visited).length;
   $('#countText').textContent = `${arr.length.toLocaleString()} 件`;
   $('#progressText').textContent = total.length ? `訪問 ${visited} / ${total.length}` : '';
@@ -460,7 +522,7 @@ function renderList() {
     <li><button class="item" data-id="${esc(p.id)}">
       <div class="main">
         <div class="name">${esc(p.name)}</div>
-        <div class="sub">${esc(p.address || p.prefecture || '')}${p.source === 'manual' ? '・手動追加' : ''}</div>
+        <div class="sub">${esc(p.address || p.prefecture || '')}${p.source === 'manual' ? '・手動追加' : p.edited ? '・編集済み' : ''}</div>
       </div>
       <div class="badges">${badgesHtml(p)}</div>
     </button></li>`).join('')
@@ -475,9 +537,9 @@ function renderPlace(id) {
   if (!p) { go('/list'); return; }
   const s = state.byPlace.get(id);
   const visits = s?.visits || [];
-  const geo = p.lat == null ? '位置情報なし'
-    : p.geoPrecision === 'city' ? '位置は市町村の代表点（概略）です'
-    : p.geoPrecision === 'osm' ? '位置は OpenStreetMap の登録地点です' : '';
+  const geo = p.lat == null ? '<span class="note">未設定</span>'
+    : `${p.lat.toFixed(5)}, ${p.lng.toFixed(5)}<div class="note">${esc(GEO_LABEL[p.geoPrecision] || '')}
+       ・<a href="https://www.openstreetmap.org/?mlat=${p.lat}&mlon=${p.lng}#map=16/${p.lat}/${p.lng}" target="_blank" rel="noopener">地図で確認</a></div>`;
   $('#v-place').innerHTML = `
     <div class="card place-head">
       <h2>${esc(p.name)}</h2>
@@ -485,29 +547,33 @@ function renderPlace(id) {
       <div class="status-row">
         ${s?.visited ? `<span class="badge v">訪問済み ${visits.filter(v => v.visited).length}回</span>` : '<span class="badge n">未訪問</span>'}
         ${s?.stamp ? '<span class="badge s">スタンプ取得済み</span>' : ''}
-        ${p.closed ? '<span class="badge n">最新の一覧に無し（閉鎖・改称の可能性）</span>' : ''}
+        ${p.status && p.status !== 'open' ? `<span class="badge n">${STATUS_LABEL[p.status]}</span>` : ''}
+        ${p.source === 'manual' ? '<span class="badge n">手動追加</span>' : p.edited ? '<span class="badge n">編集済み</span>' : ''}
+        ${p.missingFromSource ? '<span class="badge n">最新の公式一覧に無し</span>' : ''}
       </div>
       <dl class="kv">
-        <dt>所在地</dt><dd>${esc(p.address || '—')}</dd>
-        ${p.regRound ? `<dt>登録</dt><dd>${esc(p.regRound)}（${esc(p.regDate)}）</dd>` : ''}
-        ${p.url ? `<dt>公式</dt><dd><a href="${esc(p.url)}" target="_blank" rel="noopener">${esc(p.url)}</a></dd>` : ''}
-        ${p.source === 'manual' ? '<dt>登録元</dt><dd>手動追加</dd>' : ''}
+        <dt>所在地</dt><dd>${unconfirmed(p.address)}</dd>
+        <dt>位置</dt><dd>${geo}</dd>
+        <dt>登録番号</dt><dd>${unconfirmed(p.regNo)}</dd>
+        <dt>登録</dt><dd>${p.regRound || p.regDate ? esc([p.regRound, p.regDate && `（${p.regDate}）`].filter(Boolean).join('')) : unconfirmed('')}</dd>
+        <dt>公式</dt><dd>${p.url ? `<a href="${esc(p.url)}" target="_blank" rel="noopener">${esc(p.url)}</a>` : unconfirmed('')}</dd>
       </dl>
-      ${geo ? `<div class="note" style="margin-top:8px">${geo}</div>` : ''}
     </div>
     <button class="btn" id="addVisit">＋ 訪問を記録</button>
     <div class="section-title"><span>訪問記録</span><span>${visits.length}件</span></div>
-    <ul class="list">${visits.length ? visits.map(visitItemHtml).join('') : '<li class="empty">まだ記録がありません</li>'}</ul>
-    ${p.source === 'manual' ? '<div class="btn-row"><button class="btn ghost" id="editPlace">この場所を編集</button></div>' : ''}
+    <ul class="list">${visits.length ? visits.map(v => visitItemHtml(v)).join('') : '<li class="empty">まだ記録がありません</li>'}</ul>
+    <div class="btn-row"><button class="btn ghost" id="editPlace">この道の駅の情報を編集</button></div>
   `;
   $('#addVisit').onclick = () => go('/visit/new/' + encodeURIComponent(id));
-  const ep = $('#editPlace'); if (ep) ep.onclick = () => go('/place-edit/' + encodeURIComponent(id));
+  $('#editPlace').onclick = () => go('/place-edit/' + encodeURIComponent(id));
   showView('place', p.name, { back: true });
 }
 
 function visitItemHtml(v, withPlace = false) {
   const p = withPlace ? state.places.get(v.placeId) : null;
   const text = [v.impression, v.memo].filter(Boolean).join(' / ');
+  const order = new Map(state.ratingItems.filter(i => !i.hidden).map((i, n) => [i.key, n]));
+  const det = detailsArray(v).filter(d => d.value && order.has(d.key)).sort((a, b) => order.get(a.key) - order.get(b.key));
   return `<li><button class="visit" data-visit="${esc(v.id)}">
     ${p ? `<div class="place">${esc(p.name)}<span class="note">　${esc(p.prefecture || '')}</span></div>` : ''}
     <div class="top-line">
@@ -516,6 +582,7 @@ function visitItemHtml(v, withPlace = false) {
       ${v.stampObtained ? '<span class="badge s">スタンプ</span>' : ''}
       <span class="stars-inline">${starsText(v.ratingOverall)}</span>
     </div>
+    ${det.length ? `<div class="note">${det.map(d => `${esc(ratingLabel(d))}★${d.value}`).join('　')}</div>` : ''}
     ${text ? `<div class="text">${esc(text)}</div>` : ''}
   </button></li>`;
 }
@@ -545,10 +612,12 @@ async function renderVisitForm(visitId, placeIdForNew) {
     if (!v) { go('/list'); return; }
   } else {
     v = { id: null, placeId: placeIdForNew, visitedDate: today(), visited: true, stampObtained: false,
-          ratingOverall: 0, ratingDetails: {}, impression: '', memo: '' };
+          ratingOverall: 0, ratingDetails: [], impression: '', memo: '' };
   }
   const p = state.places.get(v.placeId);
   if (!p) { go('/list'); return; }
+  const det = detailsArray(v);
+  const shownItems = state.ratingItems.filter(i => !i.hidden);
   const el = $('#v-visit');
   el.innerHTML = `
     <div class="note" style="margin-bottom:12px">${esc(p.name)}${p.prefecture ? '（' + esc(p.prefecture) + '）' : ''}</div>
@@ -562,7 +631,7 @@ async function renderVisitForm(visitId, placeIdForNew) {
     </div>
     <div class="field"><div class="label">総合評価</div>${starPicker('overall', v.ratingOverall)}</div>
     <div class="field"><div class="label">項目別評価（任意）</div>
-      <div class="detail-ratings">${RATING_ITEMS.map(([k, label]) => `<span>${label}</span>${starPicker(k, v.ratingDetails?.[k], true)}`).join('')}</div>
+      <div class="detail-ratings">${shownItems.map(i => `<span>${esc(i.label)}</span>${starPicker('d:' + i.key, det.find(d => d.key === i.key)?.value, true)}`).join('')}</div>
     </div>
     <div class="field"><label for="fImp">感想</label><textarea id="fImp" placeholder="印象に残ったこと">${esc(v.impression)}</textarea></div>
     <div class="field"><label for="fMemo">メモ</label><textarea id="fMemo" placeholder="営業時間・駐車場・買った物など">${esc(v.memo)}</textarea></div>
@@ -576,8 +645,13 @@ async function renderVisitForm(visitId, placeIdForNew) {
   $('#saveVisit', el).onclick = async () => {
     const date = $('#fDate', el).value;
     if (!date) { toast('訪問日を入れてください'); return; }
-    const details = {};
-    for (const [k] of RATING_ITEMS) { const n = +$(`[data-stars="${k}"]`, el).dataset.value; if (n) details[k] = n; }
+    // 画面に出していない項目（非表示・削除済み）の過去の値はそのまま引き継ぐ
+    const shownKeys = new Set(shownItems.map(i => i.key));
+    const details = det.filter(d => !shownKeys.has(d.key));
+    for (const i of shownItems) {
+      const n = +$(`[data-stars="d:${i.key}"]`, el).dataset.value;
+      if (n) details.push({ key: i.key, label: i.label, value: n });
+    }
     const now = Date.now();
     const rec = {
       ...v, id: v.id || uid(), visitedDate: date,
@@ -608,40 +682,127 @@ async function renderVisitForm(visitId, placeIdForNew) {
 }
 
 /* ---------- 場所の手動追加・編集 ---------- */
+function parseLatLng(text) {
+  const m = String(text).normalize('NFKC').match(/(-?\d+(?:\.\d+)?)\s*[,、\s]\s*(-?\d+(?:\.\d+)?)/);
+  if (!m) return null;
+  const lat = +m[1], lng = +m[2];
+  return lat >= 20 && lat <= 46 && lng >= 122 && lng <= 154 ? { lat, lng } : null;
+}
+
+// 国土地理院の住所検索（CORS 可・公式な利用規約の掲載なし・試験運用扱い）。押したときだけ住所を送る
+async function geocodeAddress(q) {
+  const res = await fetch(GSI_SEARCH + encodeURIComponent(q));
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  const arr = await res.json();
+  if (!arr.length) return null;
+  const f = arr[0];
+  const title = f.properties.title;
+  const rough = !/[0-9０-９]|丁目|番地?|号/.test(title);
+  return { lat: +f.geometry.coordinates[1].toFixed(6), lng: +f.geometry.coordinates[0].toFixed(6), title, rough };
+}
+
+function findDuplicates(rec) {
+  const n = normQ(rec.name);
+  const out = [];
+  for (const o of state.places.values()) {
+    if (o.id === rec.id || o.type !== rec.type) continue;
+    if (normQ(o.name) === n) { out.push(`・${o.name}（${o.prefecture}）同じ名前`); continue; }
+    if (rec.lat != null && o.lat != null && o.geoPrecision !== 'city') {
+      const d = distKm(rec, o);
+      if (d < 0.3) out.push(`・${o.name}（${o.prefecture}）約${Math.round(d * 1000)}m`);
+    }
+  }
+  return out;
+}
+
 function renderPlaceEdit(id) {
-  const p = id ? state.places.get(id) : { name: '', nameKana: '', prefecture: filters.pref || '', address: '' };
+  const isNew = !id;
+  const p = isNew ? { name: '', nameKana: '', prefecture: filters.pref || '', address: '', status: 'open', lat: null, lng: null }
+    : state.places.get(id);
   if (!p) { go('/list'); return; }
+  let geo = { lat: p.lat, lng: p.lng, precision: p.geoPrecision };
   const el = $('#v-placeEdit');
   el.innerHTML = `
-    <p class="note" style="margin-top:0">一覧に無い新しい道の駅などを追加できます。位置のピン留めは今後のバージョンで対応します。</p>
-    <div class="field"><label for="pName">名前（「道の駅」は不要）</label><input type="text" id="pName" value="${esc(p.name)}" required></div>
-    <div class="field"><label for="pKana">よみ（ひらがな・任意）</label><input type="text" id="pKana" value="${esc(p.nameKana)}"></div>
+    ${isNew ? '<p class="note" style="margin-top:0">一覧に無い新しい道の駅などを追加できます。</p>'
+      : p.source === 'import' ? '<p class="note" style="margin-top:0">編集すると「編集済み」になり、今後データを更新してもこの駅の内容は上書きされません。</p>' : ''}
+    <div class="field"><label for="pName">名前（「道の駅」は不要）</label><input type="text" id="pName" value="${esc(p.name)}"></div>
+    <div class="field"><label for="pKana">よみ（任意）</label><input type="text" id="pKana" value="${esc(p.nameKana)}"></div>
     <div class="field"><label for="pPref">都道府県</label>
       <select id="pPref"><option value="">選択してください</option>${PREFS.map(x => `<option${x === p.prefecture ? ' selected' : ''}>${x}</option>`).join('')}</select></div>
-    <div class="field"><label for="pAddr">所在地（任意）</label><input type="text" id="pAddr" value="${esc(p.address)}" placeholder="例：○○県△△市"></div>
+    <div class="field"><label for="pAddr">住所</label><input type="text" id="pAddr" value="${esc(p.address)}" placeholder="例：○○市△△町1-2-3"></div>
+    <div class="field"><label for="pStatus">状態</label>
+      <select id="pStatus">${Object.entries(STATUS_LABEL).map(([k, l]) => `<option value="${k}"${k === (p.status || 'open') ? ' selected' : ''}>${l}</option>`).join('')}</select></div>
+    <div class="field">
+      <div class="label">位置</div>
+      <button type="button" class="btn ghost" id="geoBtn">住所から座標を取得</button>
+      <div class="hint" id="geoMsg"></div>
+      <label for="pLatLng" class="hint" style="display:block;margin-top:10px">緯度, 経度（直接入力・地図アプリからの貼り付け可）</label>
+      <input type="text" id="pLatLng" inputmode="decimal" value="${p.lat != null ? `${p.lat}, ${p.lng}` : ''}" placeholder="例：36.40220, 138.24918">
+      <div class="hint">地図をタップしてピンを置く・現在地から設定する方法は、今後のバージョンで追加します。</div>
+    </div>
+    <div class="section-title"><span>公式情報（任意・空欄は「未確認」と表示）</span></div>
+    <div class="field"><label for="pRegNo">登録番号</label><input type="text" id="pRegNo" value="${esc(p.regNo)}"></div>
+    <div class="field"><label for="pRound">登録回</label><input type="text" id="pRound" value="${esc(p.regRound)}" placeholder="例：第65回"></div>
+    <div class="field"><label for="pRegDate">登録年月</label><input type="text" id="pRegDate" value="${esc(p.regDate)}" placeholder="例：R8.9"></div>
+    <div class="field"><label for="pUrl">公式サイト</label><input type="text" id="pUrl" inputmode="url" value="${esc(p.url)}"></div>
     <div class="btn-row"><button class="btn" id="savePlace">保存</button></div>
-    ${id ? '<div class="btn-row"><button class="btn danger" id="delPlace">この場所を削除</button></div>' : ''}
+    ${p.source === 'manual' ? '<div class="btn-row"><button class="btn danger" id="delPlace">この道の駅を削除</button></div>'
+      : !isNew ? '<p class="hint">取り込みデータの駅は削除できません（更新時に戻るため）。閉鎖した駅は「状態」を閉鎖にしてください。</p>' : ''}
   `;
+  const msg = $('#geoMsg', el), latlng = $('#pLatLng', el);
+  latlng.addEventListener('input', () => { geo.precision = 'manual'; });
+  $('#geoBtn', el).onclick = async () => {
+    const pref = $('#pPref', el).value, addr = $('#pAddr', el).value.trim();
+    if (!addr) { msg.textContent = '先に住所を入れてください。'; return; }
+    msg.textContent = '取得中…';
+    try {
+      const r = await geocodeAddress(addr.startsWith(pref) ? addr : pref + addr);
+      if (!r) { msg.textContent = '住所が見つかりませんでした。住所を見直すか、緯度経度を直接入れてください。'; return; }
+      latlng.value = `${r.lat}, ${r.lng}`;
+      geo.precision = r.rough ? 'address-rough' : 'address';
+      msg.innerHTML = `「${esc(r.title)}」の位置を入れました${r.rough ? '（番地まで特定できず概略です）' : ''}。
+        <a href="https://www.openstreetmap.org/?mlat=${r.lat}&mlon=${r.lng}#map=16/${r.lat}/${r.lng}" target="_blank" rel="noopener">地図で確認</a>`;
+    } catch (e) {
+      msg.textContent = '取得できませんでした（通信できない・検索サービス停止など）。緯度経度を直接入れてください。';
+    }
+  };
   $('#savePlace', el).onclick = async () => {
     const name = $('#pName', el).value.trim().replace(/^道の駅\s*/, '');
     const pref = $('#pPref', el).value;
     if (!name) { toast('名前を入れてください'); return; }
     if (!pref) { toast('都道府県を選んでください'); return; }
+    let pos = { lat: null, lng: null };
+    if (latlng.value.trim()) {
+      pos = parseLatLng(latlng.value);
+      if (!pos) { toast('緯度経度の形式が正しくありません'); latlng.focus(); return; }
+    }
+    const geoChanged = pos.lat !== p.lat || pos.lng !== p.lng;
+    const now = Date.now();
     const rec = {
-      ...(id ? p : { id: 'u:' + uid(), type: 'michinoeki', source: 'manual', lat: null, lng: null, closed: false, createdAt: Date.now() }),
+      ...(isNew ? { id: 'u:' + uid(), type: 'michinoeki', source: 'manual', createdAt: now } : p),
       name, nameKana: kataToHira($('#pKana', el).value.trim()), prefecture: pref,
-      address: $('#pAddr', el).value.trim() || pref, updatedAt: Date.now(),
+      address: $('#pAddr', el).value.trim(), status: $('#pStatus', el).value,
+      regNo: $('#pRegNo', el).value.trim(), regRound: $('#pRound', el).value.trim(),
+      regDate: $('#pRegDate', el).value.trim(), url: $('#pUrl', el).value.trim(),
+      lat: pos.lat, lng: pos.lng, updatedAt: now,
     };
+    if (geoChanged) rec.geoPrecision = pos.lat == null ? null : (geo.precision || 'manual');
+    if (!isNew && p.source === 'import') rec.edited = true;
     delete rec._k;
+    // 名前か位置を変えたときだけ重複を確かめる（取り込みデータには同名駅が元からあるため）
+    if (isNew || name !== p.name || geoChanged) {
+      const dup = findDuplicates(rec);
+      if (dup.length && !confirm(`似た道の駅がすでにあります。\n${dup.slice(0, 5).join('\n')}\n\nこのまま保存しますか？`)) return;
+    }
     await db.put('places', rec);
     state.places.set(rec.id, rec);
     toast('保存しました');
-    if (id) back(); else location.replace('#/place/' + encodeURIComponent(rec.id));
+    if (isNew) location.replace('#/place/' + encodeURIComponent(rec.id)); else back();
   };
   const del = $('#delPlace', el);
   if (del) del.onclick = async () => {
     const n = state.byPlace.get(id)?.visits.length || 0;
-    if (!confirm(n ? `この場所と訪問記録 ${n} 件を削除しますか？` : 'この場所を削除しますか？')) return;
+    if (!confirm(n ? `この道の駅と訪問記録 ${n} 件を削除しますか？` : 'この道の駅を削除しますか？')) return;
     await db.tx(['places', 'visits'], 'readwrite', t => {
       t.objectStore('places').delete(id);
       for (const v of state.visits) if (v.placeId === id) t.objectStore('visits').delete(v.id);
@@ -652,7 +813,7 @@ function renderPlaceEdit(id) {
     toast('削除しました');
     go('/list');
   };
-  showView('placeEdit', id ? '場所を編集' : '道の駅を手動追加', { back: true });
+  showView('placeEdit', isNew ? '道の駅を追加' : '道の駅を編集', { back: true });
 }
 
 /* ---------- 訪問記録一覧 ---------- */
@@ -667,19 +828,37 @@ async function renderSettings() {
   const meta = await db.get('meta', 'dataVersion');
   const persisted = navigator.storage?.persisted ? await navigator.storage.persisted() : null;
   const est = navigator.storage?.estimate ? await navigator.storage.estimate() : null;
-  const manual = [...state.places.values()].filter(p => p.source === 'manual').length;
-  const closed = [...state.places.values()].filter(p => p.closed).length;
+  const all = [...state.places.values()];
+  const manual = all.filter(p => p.source === 'manual').length;
+  const edited = all.filter(p => p.edited).length;
+  const missing = all.filter(p => p.missingFromSource).length;
   $('#v-settings').innerHTML = `
     <div class="card">
+      <h3>評価項目</h3>
+      <p class="note">名前の変更・並べ替え・非表示・削除をしても、過去の記録に付けた評価は消えません（非表示・削除した項目は表示されなくなるだけです）。</p>
+      <ul class="ri-list" id="riList">${state.ratingItems.map((it, i) => `
+        <li class="ri${it.hidden ? ' off' : ''}" data-i="${i}">
+          <input type="text" value="${esc(it.label)}" aria-label="項目名" data-act="rename">
+          <button data-act="up" aria-label="上へ"${i === 0 ? ' disabled' : ''}>↑</button>
+          <button data-act="down" aria-label="下へ"${i === state.ratingItems.length - 1 ? ' disabled' : ''}>↓</button>
+          <button data-act="toggle">${it.hidden ? '表示' : '隠す'}</button>
+          <button data-act="del" aria-label="削除">✕</button>
+        </li>`).join('')}</ul>
+      <div class="ri-add"><input type="text" id="riNew" placeholder="新しい項目（例：トイレ）"><button class="btn" id="riAddBtn">追加</button></div>
+    </div>
+    <div class="card">
       <h3>データ</h3>
-      <p>道の駅：${(meta?.count ?? 0).toLocaleString()} 駅（データ版 ${esc(meta?.value || '—')}）${manual ? `／手動追加 ${manual}` : ''}${closed ? `／一覧から消えた駅 ${closed}` : ''}</p>
+      <p>道の駅：取り込み ${(meta?.count ?? 0).toLocaleString()} 駅（データ版 ${esc(meta?.value || '—')}）</p>
+      <p>手動追加 ${manual}・編集済み ${edited}${missing ? `・最新の公式一覧に無い駅 ${missing}` : ''}</p>
+      <p class="note">データを更新しても、手動追加・編集した駅は上書き・削除されません。</p>
       <p>訪問記録：${state.visits.length} 件</p>
       <p>保存領域：${persisted === null ? '確認できません' : persisted ? '永続化済み（ブラウザに消されにくい状態）' : '未永続化（ホーム画面に追加すると消えにくくなります）'}${est ? `・使用量 約${(est.usage / 1048576).toFixed(1)}MB` : ''}</p>
     </div>
     <div class="card">
       <h3>出典</h3>
       <p>道の駅の一覧（駅名・よみ・所在地・登録回）：<a href="https://www.mlit.go.jp/road/Michi-no-Eki/list.html" target="_blank" rel="noopener">国土交通省「道の駅」一覧</a>を加工して作成。</p>
-      <p>位置情報：© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors（ODbL）。OSM で見つからない駅は、<a href="https://msearch.gsi.go.jp/" target="_blank" rel="noopener">国土地理院 住所検索</a>による市町村の代表点（概略位置）。</p>
+      <p>位置情報：© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors（ODbL）。OSM で見つからない駅は、国土地理院 住所検索による市町村の代表点（概略位置）。</p>
+      <p>住所からの座標取得：<a href="https://maps.gsi.go.jp/" target="_blank" rel="noopener">国土地理院</a>の住所検索（ボタンを押したときだけ、入力した住所を送信します）。</p>
       <p class="note">このアプリは国土交通省・国土地理院が作成したものではありません。</p>
     </div>
     <div class="card">
@@ -688,6 +867,33 @@ async function renderSettings() {
       <p class="note">記録はこの端末のブラウザ内だけに保存され、外部には送信されません。</p>
     </div>
   `;
+  const list = $('#riList');
+  const rerender = async () => { await saveRatingItems(); renderSettings(); };
+  list.addEventListener('change', async e => {
+    if (e.target.dataset.act !== 'rename') return;
+    const i = +e.target.closest('li').dataset.i, label = e.target.value.trim();
+    if (!label) { e.target.value = state.ratingItems[i].label; return; }
+    state.ratingItems[i].label = label;
+    await saveRatingItems(); toast('名前を変えました');
+  });
+  list.addEventListener('click', async e => {
+    const b = e.target.closest('button'); if (!b) return;
+    const i = +b.closest('li').dataset.i, items = state.ratingItems;
+    if (b.dataset.act === 'up' && i > 0) [items[i - 1], items[i]] = [items[i], items[i - 1]];
+    else if (b.dataset.act === 'down' && i < items.length - 1) [items[i + 1], items[i]] = [items[i], items[i + 1]];
+    else if (b.dataset.act === 'toggle') items[i].hidden = !items[i].hidden;
+    else if (b.dataset.act === 'del') {
+      if (!confirm(`「${items[i].label}」を削除しますか？\n過去の記録の値は残りますが、表示されなくなります。`)) return;
+      items.splice(i, 1);
+    } else return;
+    rerender();
+  });
+  $('#riAddBtn').onclick = () => {
+    const label = $('#riNew').value.trim();
+    if (!label) return;
+    state.ratingItems.push({ key: 'c_' + uid().replace(/-/g, '').slice(0, 10), label, hidden: false });
+    rerender();
+  };
 }
 
 /* ---------- 起動 ---------- */
@@ -705,6 +911,7 @@ async function boot() {
   });
 
   await db.open();
+  await loadRatingItems();
   const [places, visits] = await Promise.all([db.all('places'), db.all('visits')]);
   places.forEach(p => state.places.set(p.id, p));
   state.visits = visits;
