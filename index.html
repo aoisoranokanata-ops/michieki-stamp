@@ -9,6 +9,7 @@
 <title>道の駅スタンプ帳</title>
 <link rel="stylesheet" href="vendor/leaflet/leaflet.css">
 <script src="vendor/leaflet/leaflet.js"></script>
+<script src="vendor/jszip/jszip.min.js"></script>
 <style>
 :root {
   --bg: #f6f5f1; --surface: #ffffff; --surface2: #eeece6; --text: #1f2421; --muted: #6b716d;
@@ -181,6 +182,14 @@ nav.tabs button.on { color: var(--accent); font-weight: 700; }
 .st-results { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
 .st-results button { text-align: left; min-height: 48px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); padding: 6px 12px; line-height: 1.35; }
 .st-results .op { display: block; font-size: 12px; color: var(--muted); }
+.banner.warn { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.banner.warn span { flex: 1 1 180px; }
+.banner.warn button { border: 0; border-radius: 16px; height: 34px; padding: 0 12px; font-weight: 700; background: var(--stamp); color: #fff; }
+.banner.warn button.later { background: transparent; color: var(--stamp); }
+.bk-box { background: var(--surface2); border-radius: 12px; padding: 12px; margin-top: 10px; font-size: 14px; }
+.bk-box .btn-row { margin-top: 10px; }
+.bk-box label { display: flex; gap: 8px; align-items: flex-start; padding: 8px 0; }
+.bk-box input[type=radio] { margin-top: 4px; width: 20px; height: 20px; flex: 0 0 auto; }
 .sr-file { position: fixed; left: -1000px; top: 0; width: 1px; height: 1px; opacity: 0; }
 .chips { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 4px; scrollbar-width: none; }
 .chips::-webkit-scrollbar { display: none; }
@@ -226,6 +235,7 @@ nav.tabs button.on { color: var(--accent); font-weight: 700; }
   <!-- 一覧 -->
   <section class="view" id="v-list">
     <div id="loadBanner"></div>
+    <div id="backupBanner"></div>
     <div class="chips type-chips" id="typeChips"></div>
     <div class="search">
       <input id="q" type="search" placeholder="名前・よみ・市町村で検索" autocomplete="off" enterkeyhint="search">
@@ -293,10 +303,11 @@ nav.tabs button.on { color: var(--accent); font-weight: 700; }
 <div class="toast" id="toast"></div>
 <!-- iOS では display:none の input を click() すると開かない版があるため、見えない状態で置いておく -->
 <input type="file" id="photoInput" accept="image/*" class="sr-file" tabindex="-1" aria-hidden="true">
+<input type="file" id="zipInput" accept=".zip,application/zip,application/x-zip-compressed" class="sr-file" tabindex="-1" aria-hidden="true">
 
 <script>
 'use strict';
-const APP_VERSION = '0.4.0';
+const APP_VERSION = '0.5.0';
 const APP_KEY = 'michieki-stamp';           // DB名・localStorageキーの接頭辞（github.io は他アプリと同一オリジン）
 const DATA_URL = 'data/michinoeki.json';
 // 評価項目の初期値。実際の項目は meta ストアの ratingItems（設定画面で増減・改名・並べ替え・非表示）
@@ -345,7 +356,7 @@ const ls = {
 };
 function toast(msg) {
   const t = $('#toast'); t.textContent = msg; t.classList.add('show');
-  clearTimeout(toast.timer); toast.timer = setTimeout(() => t.classList.remove('show'), 1800);
+  clearTimeout(toast.timer); toast.timer = setTimeout(() => t.classList.remove('show'), Math.max(1800, msg.length * 90));   // 長い知らせは長めに出す
 }
 
 /* ---------- IndexedDB ---------- */
@@ -405,6 +416,9 @@ const state = {
   pending: null,          // 選んだ直後でまだ保存していない写真 {file, placeId, visitId}
   stampKind: '',          // スタンプ帳の絞り込み
   here: null,             // 現在地 {lat, lng, acc, at}（保存はせず、開いている間だけ持つ）
+  lastBackup: null,       // meta 'lastBackup' {at, name, counts}
+  backup: null,           // 作成済みでまだ保存していない ZIP {blob, name, manifest}
+  restore: null,          // 読み込んで確認中のバックアップ
 };
 
 /* 評価項目。記録側は [{key, label, value}] の配列で持ち、表示名は key で設定から引く（改名・削除しても過去の値は壊れない） */
@@ -646,6 +660,7 @@ function renderList() {
         : filters.type !== 'michinoeki' && !total.length ? `${LIST_GROUPS[filters.type]}はまだ登録されていません。<br>右上の「＋追加」から登録できます。`
         : '条件に合う場所がありません'}</li>`;
   renderHereLine();
+  renderBackupBanner();
   $('#moreBtn').hidden = arr.length <= state.listLimit;
   $('#moreBtn').textContent = `もっと表示（残り ${(arr.length - state.listLimit).toLocaleString()} 件）`;
 }
@@ -1482,6 +1497,205 @@ function renderVisits() {
     : '<li class="empty">まだ訪問記録がありません。<br>「道の駅」タブから場所を選んで記録できます。</li>';
 }
 
+/* ---------- バックアップ（ZIP 書き出し・読み込み） ---------- */
+// ZIP の中身: manifest.json（形式・件数）/ data.json（場所・訪問・スタンプ・評価項目）/ photos/*.jpg / thumbs/*.jpg
+const BACKUP_FORMAT = 1;
+const BACKUP_WARN_DAYS = 14;
+const plain = o => Object.fromEntries(Object.entries(o).filter(([k]) => !k.startsWith('_')));   // 画面用の一時項目（_k など）を落とす
+
+// 手動追加・編集した場所と、記録が紐づいている場所は必ず含める（同梱データから作り直せない情報を落とさないため）
+function backupPlaces() {
+  return [...state.places.values()].filter(p => p.source === 'manual' || p.edited || state.byPlace.has(p.id)).map(plain);
+}
+function userDataCount() {
+  return state.visits.length + state.stamps.length + [...state.places.values()].filter(p => p.source === 'manual' || p.edited).length;
+}
+function changesSince(t) {
+  const n = a => a.filter(x => (x.updatedAt || x.createdAt || 0) > t).length;
+  return n(state.visits) + n(state.stamps) + n([...state.places.values()].filter(p => p.source === 'manual' || p.edited));
+}
+function backupStatus() {
+  if (!userDataCount()) return null;
+  const lb = state.lastBackup;
+  if (!lb) return { warn: true, text: 'まだバックアップがありません。写真や記録はこの端末のブラウザ内にしか無いため、ZIP で保存しておきましょう。' };
+  const days = Math.floor((Date.now() - lb.at) / 864e5), changed = changesSince(lb.at);
+  const text = `最終バックアップ：${new Date(lb.at).toLocaleString('ja-JP', { dateStyle: 'medium', timeStyle: 'short' })}（${days ? days + '日前' : '今日'}）${changed ? `・その後の変更 ${changed} 件` : '・その後の変更なし'}`;
+  return { warn: days >= BACKUP_WARN_DAYS && changed > 0, days, changed, text };
+}
+function renderBackupBanner() {
+  const box = $('#backupBanner');
+  const st = backupStatus();
+  const snoozed = ls.get('backupSnooze', '') === today();
+  if (!st?.warn || snoozed) { box.innerHTML = ''; return; }
+  box.innerHTML = `<div class="banner warn"><span>⚠ ${st.days != null ? `前回のバックアップから ${st.days} 日たちました（その後の変更 ${st.changed} 件）。` : 'まだバックアップがありません。'}</span>
+    <button id="bkGo">バックアップする</button><button class="later" id="bkLater">今日は表示しない</button></div>`;
+  $('#bkGo').onclick = () => { go('/settings'); };
+  $('#bkLater').onclick = () => { ls.set('backupSnooze', today()); renderBackupBanner(); };
+}
+
+async function buildBackup(onProgress) {
+  const zip = new JSZip();
+  const now = new Date();
+  const stamps = state.stamps.map(st => {
+    const { photo, thumb, ...m } = plain(st);
+    if (photo) zip.file(`photos/${st.id}.jpg`, photo, { compression: 'STORE' });   // JPEG は圧縮しても縮まない
+    if (thumb) zip.file(`thumbs/${st.id}.jpg`, thumb, { compression: 'STORE' });
+    return { ...m, photoFile: photo ? `photos/${st.id}.jpg` : null, thumbFile: thumb ? `thumbs/${st.id}.jpg` : null };
+  });
+  const data = { places: backupPlaces(), visits: state.visits.map(plain), stamps, ratingItems: state.ratingItems };
+  const meta = await db.get('meta', 'dataVersion');
+  const manifest = {
+    app: APP_KEY, format: BACKUP_FORMAT, appVersion: APP_VERSION, exportedAt: now.toISOString(), dataVersion: meta?.value || null,
+    counts: { places: data.places.length, visits: data.visits.length, stamps: stamps.length, photos: stamps.filter(x => x.photoFile).length },
+  };
+  zip.file('manifest.json', JSON.stringify(manifest, null, 1));
+  zip.file('data.json', JSON.stringify(data));
+  zip.file('README.txt', '道の駅スタンプ帳のバックアップです。\r\nアプリの「設定」→「バックアップから復元」で読み込めます。\r\n中の写真と記録は個人の記録です。他の人と共有しないでください。\r\n');
+  const blob = await zip.generateAsync({ type: 'blob', mimeType: 'application/zip', compression: 'DEFLATE', compressionOptions: { level: 6 } },
+    m => onProgress && onProgress(Math.round(m.percent)));
+  const pad = n => String(n).padStart(2, '0');
+  const name = `michieki-stamp-backup-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}.zip`;
+  return { blob, name, manifest };
+}
+async function markBackedUp(b) {
+  state.lastBackup = { key: 'lastBackup', at: Date.now(), name: b.name, counts: b.manifest.counts };
+  await db.put('meta', state.lastBackup);
+  renderBackupBanner();
+  if (currentView === 'settings') renderSettings();
+}
+
+// 共有シート（iPhone では「"ファイル"に保存」で iCloud Drive などへ）。タップの処理の中で await を挟まずに呼ぶこと
+function shareBackup(b) {
+  const file = new File([b.blob], b.name, { type: 'application/zip' });
+  navigator.share({ files: [file], title: b.name })
+    .then(() => { markBackedUp(b); toast('バックアップを保存しました'); })
+    .catch(e => { if (e.name !== 'AbortError') toast('共有できませんでした。「ダウンロード」を試してください'); });
+}
+function downloadBackup(b) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(b.blob); a.download = b.name;
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+  markBackedUp(b);
+  toast('ダウンロードしました。保存先を確認してください');
+}
+
+async function readBackup(file) {
+  let zip;
+  try { zip = await JSZip.loadAsync(file); } catch { throw new Error('ZIP ファイルとして読めませんでした'); }
+  const mf = zip.file('manifest.json'), df = zip.file('data.json');
+  if (!mf || !df) throw new Error('このアプリのバックアップではありません（manifest.json / data.json がありません）');
+  const manifest = JSON.parse(await mf.async('string'));
+  if (manifest.app !== APP_KEY) throw new Error('このアプリのバックアップではありません');
+  if (manifest.format > BACKUP_FORMAT) throw new Error('新しい版のアプリで作られたバックアップです。アプリを更新してから読み込んでください');
+  const data = JSON.parse(await df.async('string'));
+  for (const k of ['places', 'visits', 'stamps']) if (!Array.isArray(data[k])) throw new Error(`バックアップの中身が壊れています（${k}）`);
+  return { zip, manifest, data, fileName: file.name };
+}
+
+// 復元。overwrite: この端末の記録をバックアップの内容に置き換える / merge: 足し合わせ、同じ記録は更新日時の新しい方を残す
+async function applyRestore(r, mode) {
+  const { zip, data } = r;
+  const valid = x => x && typeof x.id === 'string';
+  const places = data.places.filter(p => valid(p) && p.name);
+  const visits = data.visits.filter(v => valid(v) && v.placeId && v.visitedDate);
+  const stamps = [], missing = [];
+  for (const m of data.stamps.filter(valid)) {
+    const ph = m.photoFile && zip.file(m.photoFile), th = m.thumbFile && zip.file(m.thumbFile);
+    if (!ph) { missing.push(m.id); continue; }   // 写真の無いスタンプ記録は読み込まない
+    const photo = new Blob([await ph.async('arraybuffer')], { type: 'image/jpeg' });
+    const thumb = th ? new Blob([await th.async('arraybuffer')], { type: 'image/jpeg' }) : photo;
+    const { photoFile, thumbFile, ...rest } = m;
+    stamps.push({ ...rest, photo, thumb });
+  }
+  const newer = (inc, cur) => !cur || (inc.updatedAt || inc.createdAt || 0) > (cur.updatedAt || cur.createdAt || 0);
+  let added = 0, updated = 0, kept = 0;
+  await db.tx(['places', 'visits', 'stamps', 'meta'], 'readwrite', t => {
+    const P = t.objectStore('places'), V = t.objectStore('visits'), S = t.objectStore('stamps'), M = t.objectStore('meta');
+    if (mode === 'overwrite') {
+      V.clear(); S.clear();
+      // 手動追加・編集した場所は消し、取り込みデータは次の起動時の更新で元に戻す
+      for (const p of state.places.values()) if (p.source === 'manual' || p.edited) P.delete(p.id);
+      M.delete('dataVersion');
+      for (const p of places) P.put(p);
+      for (const v of visits) V.put(v);
+      for (const st of stamps) S.put(st);
+      if (Array.isArray(data.ratingItems) && data.ratingItems.length) M.put({ key: 'ratingItems', items: data.ratingItems });
+      added = places.length + visits.length + stamps.length;
+      return;
+    }
+    const localV = new Map(state.visits.map(v => [v.id, v])), localS = new Map(state.stamps.map(x => [x.id, x]));
+    const put = (store, inc, cur) => { if (newer(inc, cur)) { store.put(inc); cur ? updated++ : added++; } else kept++; };
+    for (const p of places) put(P, p, state.places.get(p.id));
+    for (const v of visits) put(V, v, localV.get(v.id));
+    for (const st of stamps) put(S, st, localS.get(st.id));
+    // 評価項目は、この端末に無い項目だけ後ろに足す（並び・名前はこの端末の設定を優先）
+    if (Array.isArray(data.ratingItems)) {
+      const have = new Set(state.ratingItems.map(i => i.key));
+      const items = [...state.ratingItems, ...data.ratingItems.filter(i => i?.key && !have.has(i.key))];
+      M.put({ key: 'ratingItems', items });
+    }
+  });
+  return { added, updated, kept, skippedStamps: missing.length };
+}
+
+function renderBackupCard() {
+  const st = backupStatus();
+  const b = state.backup, r = state.restore;
+  const card = $('#backupCard');
+  if (!card) return;
+  const mb = n => n < 1048576 ? Math.max(1, Math.round(n / 1024)) + 'KB' : (n / 1048576).toFixed(1) + 'MB';
+  const canShare = b && navigator.canShare && navigator.canShare({ files: [new File([b.blob], b.name, { type: 'application/zip' })] });
+  card.innerHTML = `
+    <h3>バックアップ</h3>
+    <p>${st ? esc(st.text) : 'まだ記録がありません。'}</p>
+    <p class="note">記録と写真は、この端末のブラウザの中だけにあります。iPhone では長く使わないと消えることがあり、機種変更でも引き継がれません。
+      定期的に ZIP で保存してください（「ファイル」アプリの iCloud Drive など）。${BACKUP_WARN_DAYS}日以上たって変更があると、一覧に警告を出します。</p>
+    <div class="btn-row"><button class="btn" id="bkMake">バックアップを作成</button></div>
+    ${b ? `<div class="bk-box">作成しました：${esc(b.name)}（${mb(b.blob.size)}・場所 ${b.manifest.counts.places}／訪問 ${b.manifest.counts.visits}／スタンプ ${b.manifest.counts.stamps}）
+      <div class="btn-row">${canShare ? '<button class="btn" id="bkShare">共有・"ファイル"に保存</button>' : ''}<button class="btn ${canShare ? 'ghost' : ''}" id="bkDl">ダウンロード</button></div></div>` : ''}
+    <div class="btn-row"><button class="btn ghost" id="bkOpen">バックアップから復元…</button></div>
+    ${r ? `<div class="bk-box">
+      <b>${esc(r.fileName)}</b><br>作成：${new Date(r.manifest.exportedAt).toLocaleString('ja-JP')}（v${esc(r.manifest.appVersion)}）<br>
+      場所 ${r.data.places.length}・訪問 ${r.data.visits.length}・スタンプ ${r.data.stamps.length}
+      <label><input type="radio" name="bkMode" value="merge" checked><span><b>マージ</b>：この端末の記録に足す。同じ記録は更新日時が新しい方を残す</span></label>
+      <label><input type="radio" name="bkMode" value="overwrite"><span><b>上書き</b>：この端末の記録・写真・手動追加した場所を消して、バックアップの内容に置き換える</span></label>
+      <div class="btn-row"><button class="btn" id="bkApply">読み込む</button><button class="btn ghost" id="bkCancel">やめる</button></div></div>` : ''}
+  `;
+  $('#bkMake').onclick = async e => {
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    try {
+      state.backup = await buildBackup(p => { btn.textContent = `作成中… ${p}%`; });
+      renderBackupCard();
+    } catch (err) { toast('作成できませんでした：' + (err.message || err)); btn.disabled = false; btn.textContent = 'バックアップを作成'; }
+  };
+  const sh = $('#bkShare'); if (sh) sh.onclick = () => shareBackup(state.backup);
+  const dl = $('#bkDl'); if (dl) dl.onclick = () => downloadBackup(state.backup);
+  $('#bkOpen').onclick = () => {
+    const inp = $('#zipInput'); inp.value = '';
+    inp.onchange = async () => {
+      const f = inp.files && inp.files[0]; if (!f) return;
+      try { state.restore = await readBackup(f); } catch (err) { state.restore = null; toast(err.message); }
+      renderBackupCard();
+    };
+    inp.click();
+  };
+  const cancel = $('#bkCancel'); if (cancel) cancel.onclick = () => { state.restore = null; renderBackupCard(); };
+  const apply = $('#bkApply');
+  if (apply) apply.onclick = async () => {
+    const mode = card.querySelector('input[name=bkMode]:checked').value;
+    if (mode === 'overwrite' && !confirm(`この端末の訪問記録 ${state.visits.length} 件・スタンプ写真 ${state.stamps.length} 枚・手動追加/編集した場所はすべて消え、バックアップの内容に置き換わります。\n\n本当に上書きしますか？`)) return;
+    apply.disabled = true; apply.textContent = '読み込み中…';
+    try {
+      const res = await applyRestore(state.restore, mode);
+      ls.set('flash', mode === 'overwrite' ? `上書きで復元しました（${res.added} 件）${res.skippedStamps ? `・写真の無いスタンプ ${res.skippedStamps} 件は読み込みませんでした` : ''}`
+        : `マージしました（追加 ${res.added}・更新 ${res.updated}・この端末の方が新しく残した ${res.kept}）${res.skippedStamps ? `・写真の無いスタンプ ${res.skippedStamps} 件は除外` : ''}`);
+      location.reload();   // 読み直して画面と集計を作り直す
+    } catch (err) { toast('読み込めませんでした：' + (err.message || err)); apply.disabled = false; apply.textContent = '読み込む'; }
+  };
+}
+
 /* ---------- 設定・情報 ---------- */
 async function renderSettings() {
   const meta = await db.get('meta', 'dataVersion');
@@ -1492,6 +1706,7 @@ async function renderSettings() {
   const edited = all.filter(p => p.edited).length;
   const missing = all.filter(p => p.missingFromSource).length;
   $('#v-settings').innerHTML = `
+    <div class="card" id="backupCard"></div>
     <div class="card">
       <h3>評価項目</h3>
       <p class="note">名前の変更・並べ替え・非表示・削除をしても、過去の記録に付けた評価は消えません（非表示・削除した項目は表示されなくなるだけです）。</p>
@@ -1530,6 +1745,7 @@ async function renderSettings() {
       <p class="note">記録はこの端末のブラウザ内だけに保存され、外部には送信されません。</p>
     </div>
   `;
+  renderBackupCard();
   const list = $('#riList');
   const rerender = async () => { await saveRatingItems(); renderSettings(); };
   list.addEventListener('change', async e => {
@@ -1577,6 +1793,8 @@ async function boot() {
 
   await db.open();
   await loadRatingItems();
+  state.lastBackup = await db.get('meta', 'lastBackup') || null;
+  const flash = ls.get('flash', ''); if (flash) { ls.set('flash', ''); setTimeout(() => toast(flash), 300); }
   const [places, visits, stamps] = await Promise.all([db.all('places'), db.all('visits'), db.all('stamps')]);
   state.stamps = stamps;
   state.stampKind = ls.get('stampKind', '');
