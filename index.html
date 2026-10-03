@@ -158,6 +158,28 @@ nav.tabs button.on { color: var(--accent); font-weight: 700; }
 .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 .banner { background: var(--stamp-soft); color: var(--stamp); border-radius: 12px; padding: 10px 12px; font-size: 14px; margin-bottom: 10px; }
 .settings p { margin: 6px 0; font-size: 14px; }
+.sr-file { position: fixed; left: -1000px; top: 0; width: 1px; height: 1px; opacity: 0; }
+.chips { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 4px; scrollbar-width: none; }
+.chips::-webkit-scrollbar { display: none; }
+.chip { flex: 0 0 auto; height: 38px; padding: 0 14px; border-radius: 19px; border: 1px solid var(--line); background: var(--surface); font-size: 14px; }
+.chip[aria-pressed=true] { background: var(--stamp-soft); color: var(--stamp); border-color: var(--stamp); font-weight: 700; }
+.grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+@media (min-width: 560px) { .grid { grid-template-columns: repeat(4, 1fr); } }
+.tile { position: relative; border: 0; padding: 0; background: var(--surface2); border-radius: 10px; overflow: hidden; aspect-ratio: 1; }
+.tile img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.tile .cap { position: absolute; left: 0; right: 0; bottom: 0; padding: 14px 6px 4px; font-size: 11px; color: #fff; text-align: left;
+  background: linear-gradient(transparent, rgba(0,0,0,.65)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tile .kind { position: absolute; top: 4px; left: 4px; font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 8px; background: rgba(0,0,0,.55); color: #fff; }
+.strip { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.add-tile { border: 2px dashed var(--line); background: transparent; color: var(--muted); border-radius: 10px; aspect-ratio: 1; font-size: 13px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; }
+.add-tile .plus { font-size: 26px; line-height: 1; }
+.photo-view { width: 100%; border-radius: var(--radius); display: block; background: var(--surface2); }
+.photo-busy { aspect-ratio: 4 / 3; display: flex; align-items: center; justify-content: center; color: var(--muted); background: var(--surface2); border-radius: var(--radius); }
+.picker-results { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+.picker-results button { text-align: left; min-height: 44px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); padding: 6px 12px; }
+.picked { display: flex; align-items: center; gap: 8px; background: var(--surface); border-radius: 12px; padding: 10px 12px; }
+.picked .nm { flex: 1; font-weight: 700; }
+.picked button { border: 0; background: transparent; color: var(--accent); font-weight: 700; min-height: 40px; }
 .ri-list { list-style: none; margin: 10px 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .ri { display: flex; gap: 4px; align-items: center; }
 .ri input { flex: 1; min-width: 0; height: 44px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); padding: 0 10px; font-size: 16px; }
@@ -216,20 +238,33 @@ nav.tabs button.on { color: var(--accent); font-weight: 700; }
     <ul class="list" id="visitList"></ul>
   </section>
 
+  <!-- スタンプ帳 -->
+  <section class="view" id="v-stamps">
+    <div class="chips" id="kindChips"></div>
+    <div class="count-line"><span id="stampCount"></span></div>
+    <div class="grid" id="stampGrid"></div>
+  </section>
+
+  <!-- スタンプ写真の登録・編集 -->
+  <section class="view" id="v-stamp"></section>
+
   <!-- 設定・情報 -->
   <section class="view settings" id="v-settings"></section>
 </main>
 
 <nav class="tabs">
   <button data-tab="list"><span class="ico">🏠</span>道の駅</button>
+  <button data-tab="stamps"><span class="ico">📮</span>スタンプ帳</button>
   <button data-tab="visits"><span class="ico">📝</span>訪問記録</button>
   <button data-tab="settings"><span class="ico">⚙️</span>設定</button>
 </nav>
 <div class="toast" id="toast"></div>
+<!-- iOS では display:none の input を click() すると開かない版があるため、見えない状態で置いておく -->
+<input type="file" id="photoInput" accept="image/*" class="sr-file" tabindex="-1" aria-hidden="true">
 
 <script>
 'use strict';
-const APP_VERSION = '0.1.2';
+const APP_VERSION = '0.2.0';
 const APP_KEY = 'michieki-stamp';           // DB名・localStorageキーの接頭辞（github.io は他アプリと同一オリジン）
 const DATA_URL = 'data/michinoeki.json';
 // 評価項目の初期値。実際の項目は meta ストアの ratingItems（設定画面で増減・改名・並べ替え・非表示）
@@ -241,6 +276,8 @@ const GEO_LABEL = {
   'address-rough': '住所から取得（町名レベル以上の概略）', manual: '手入力',
 };
 const GSI_SEARCH = 'https://msearch.gsi.go.jp/address-search/AddressSearch?q=';
+const KIND_LABEL = { michinoeki: '道の駅', station: '駅', memorial: '記念', other: 'その他' };
+const PHOTO_MAX = 1600, THUMB_MAX = 400;   // 長辺 px
 const PREFS = ['北海道','青森県','岩手県','宮城県','秋田県','山形県','福島県','茨城県','栃木県','群馬県','埼玉県','千葉県','東京都','神奈川県','新潟県','富山県','石川県','福井県','山梨県','長野県','岐阜県','静岡県','愛知県','三重県','滋賀県','京都府','大阪府','兵庫県','奈良県','和歌山県','鳥取県','島根県','岡山県','広島県','山口県','徳島県','香川県','愛媛県','高知県','福岡県','佐賀県','長崎県','熊本県','大分県','宮崎県','鹿児島県','沖縄県'];
 
 /* ---------- 小物 ---------- */
@@ -320,6 +357,9 @@ const state = {
   byPlace: new Map(),     // placeId -> {visits:[], visited, stamp, last}
   listLimit: 80,
   ratingItems: [],        // [{key, label, hidden}] 表示順
+  stamps: [],             // 全スタンプ記録（photo/thumb は Blob）
+  pending: null,          // 選んだ直後でまだ保存していない写真 {file, placeId, visitId}
+  stampKind: '',          // スタンプ帳の絞り込み
 };
 
 /* 評価項目。記録側は [{key, label, value}] の配列で持ち、表示名は key で設定から引く（改名・削除しても過去の値は壊れない） */
@@ -341,14 +381,21 @@ const isActive = p => p.status !== 'closed';
 
 function reindexVisits() {
   state.byPlace = new Map();
+  const slot = id => {
+    let s = state.byPlace.get(id);
+    if (!s) state.byPlace.set(id, s = { visits: [], stamps: [], visited: false, stamp: false, last: '' });
+    return s;
+  };
+  // スタンプ写真がある場所は「スタンプあり」とみなす
+  for (const st of state.stamps) if (st.placeId) { const s = slot(st.placeId); s.stamps.push(st); s.stamp = true; }
   for (const v of state.visits) {
-    let s = state.byPlace.get(v.placeId);
-    if (!s) state.byPlace.set(v.placeId, s = { visits: [], visited: false, stamp: false, last: '' });
+    const s = slot(v.placeId);
     s.visits.push(v);
     if (v.visited) s.visited = true;
     if (v.stampObtained) s.stamp = true;
     if (v.visitedDate > s.last) s.last = v.visitedDate;
   }
+  for (const s of state.byPlace.values()) s.stamps.sort((a, b) => b.takenDate.localeCompare(a.takenDate) || b.createdAt - a.createdAt);
   for (const s of state.byPlace.values()) s.visits.sort((a, b) => b.visitedDate.localeCompare(a.visitedDate) || b.createdAt - a.createdAt);
 }
 
@@ -434,12 +481,12 @@ function showView(name, title, { back = false, action = null } = {}) {
   const ha = $('#headAction');
   ha.hidden = !action;
   if (action) { ha.textContent = action.label; ha.onclick = action.fn; }
-  const tab = { list: 'list', place: 'list', placeEdit: 'list', visit: 'list', visits: 'visits', settings: 'settings' }[name];
+  const tab = { list: 'list', place: 'list', placeEdit: 'list', visit: 'list', visits: 'visits', settings: 'settings', stamps: 'stamps', stamp: 'stamps' }[name];
   document.querySelectorAll('nav.tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
   const prev = currentView;
   currentView = name;
   // 一覧に戻ったときはスクロール位置を復元、それ以外は先頭へ
-  requestAnimationFrame(() => window.scrollTo(0, (name === 'list' || name === 'visits') && prev !== name ? (scrollPos[name] || 0) : 0));
+  requestAnimationFrame(() => window.scrollTo(0, ['list', 'visits', 'stamps'].includes(name) && prev !== name ? (scrollPos[name] || 0) : 0));
 }
 
 function route() {
@@ -452,6 +499,9 @@ function route() {
   if (a === 'place-new') return renderPlaceEdit(null);
   if (a === 'place-edit' && b) return renderPlaceEdit([b, ...rest].join('/'));
   if (a === 'visits') { renderVisits(); return showView('visits', '訪問記録'); }
+  if (a === 'stamps') { renderStamps(); return showView('stamps', 'スタンプ帳', { action: { label: '＋追加', fn: () => pickPhoto({}) } }); }
+  if (a === 'stamp-new') return renderStampEdit(null);
+  if (a === 'stamp' && b) return renderStampEdit(b);
   if (a === 'settings') { renderSettings(); return showView('settings', '設定・情報'); }
   renderList();
   showView('list', '道の駅スタンプ帳', { action: { label: '＋追加', fn: () => go('/place-new') } });
@@ -560,11 +610,14 @@ function renderPlace(id) {
       </dl>
     </div>
     <button class="btn" id="addVisit">＋ 訪問を記録</button>
+    <div class="section-title"><span>スタンプ写真</span><span>${s?.stamps.length || 0}枚</span></div>
+    <div class="strip">${stampTiles(s?.stamps || [], false)}<button class="add-tile" id="addStamp"><span class="plus">＋</span>撮る・選ぶ</button></div>
     <div class="section-title"><span>訪問記録</span><span>${visits.length}件</span></div>
     <ul class="list">${visits.length ? visits.map(v => visitItemHtml(v)).join('') : '<li class="empty">まだ記録がありません</li>'}</ul>
     <div class="btn-row"><button class="btn ghost" id="editPlace">この道の駅の情報を編集</button></div>
   `;
   $('#addVisit').onclick = () => go('/visit/new/' + encodeURIComponent(id));
+  $('#addStamp').onclick = () => pickPhoto({ placeId: id });
   $('#editPlace').onclick = () => go('/place-edit/' + encodeURIComponent(id));
   showView('place', p.name, { back: true });
 }
@@ -635,6 +688,9 @@ async function renderVisitForm(visitId, placeIdForNew) {
     </div>
     <div class="field"><label for="fImp">感想</label><textarea id="fImp" placeholder="印象に残ったこと">${esc(v.impression)}</textarea></div>
     <div class="field"><label for="fMemo">メモ</label><textarea id="fMemo" placeholder="営業時間・駐車場・買った物など">${esc(v.memo)}</textarea></div>
+    ${v.id ? `<div class="field"><div class="label">この訪問のスタンプ写真</div>
+      <div class="strip">${stampTiles(state.stamps.filter(x => x.visitId === v.id), false)}<button type="button" class="add-tile" id="addVisitStamp"><span class="plus">＋</span>撮る・選ぶ</button></div></div>`
+      : '<p class="hint">スタンプ写真は、保存したあと道の駅の画面から追加できます。</p>'}
     <div class="btn-row"><button class="btn" id="saveVisit">保存</button></div>
     ${v.id ? '<div class="btn-row"><button class="btn danger" id="delVisit">この記録を削除</button></div>' : ''}
   `;
@@ -642,6 +698,8 @@ async function renderVisitForm(visitId, placeIdForNew) {
     $(id, el).onclick = e => { const b = e.currentTarget; b.setAttribute('aria-pressed', b.getAttribute('aria-pressed') !== 'true'); };
   }
   bindStars(el);
+  const avs = $('#addVisitStamp', el);
+  if (avs) avs.onclick = () => pickPhoto({ placeId: v.placeId, visitId: v.id });
   $('#saveVisit', el).onclick = async () => {
     const date = $('#fDate', el).value;
     if (!date) { toast('訪問日を入れてください'); return; }
@@ -671,8 +729,12 @@ async function renderVisitForm(visitId, placeIdForNew) {
   };
   const del = $('#delVisit', el);
   if (del) del.onclick = async () => {
-    if (!confirm(`${fmtDate(v.visitedDate)} の記録を削除しますか？`)) return;
-    await db.del('visits', v.id);
+    if (!confirm(`${fmtDate(v.visitedDate)} の記録を削除しますか？${state.stamps.some(x => x.visitId === v.id) ? '\n（スタンプ写真は消えずに残ります）' : ''}`)) return;
+    const linked = state.stamps.filter(x => x.visitId === v.id);
+    await db.tx(['visits', 'stamps'], 'readwrite', t => {
+      t.objectStore('visits').delete(v.id);
+      for (const st of linked) { st.visitId = null; t.objectStore('stamps').put(st); }
+    });
     state.visits = state.visits.filter(x => x.id !== v.id);
     reindexVisits();
     toast('削除しました');
@@ -813,19 +875,234 @@ function renderPlaceEdit(id) {
   };
   const del = $('#delPlace', el);
   if (del) del.onclick = async () => {
-    const n = state.byPlace.get(id)?.visits.length || 0;
-    if (!confirm(n ? `この道の駅と訪問記録 ${n} 件を削除しますか？` : 'この道の駅を削除しますか？')) return;
-    await db.tx(['places', 'visits'], 'readwrite', t => {
+    const n = state.byPlace.get(id)?.visits.length || 0, ns = state.byPlace.get(id)?.stamps.length || 0;
+    const extra = [n && `訪問記録 ${n} 件`, ns && `スタンプ写真 ${ns} 枚`].filter(Boolean).join('・');
+    if (!confirm(extra ? `この道の駅と、${extra}を削除しますか？` : 'この道の駅を削除しますか？')) return;
+    await db.tx(['places', 'visits', 'stamps'], 'readwrite', t => {
       t.objectStore('places').delete(id);
       for (const v of state.visits) if (v.placeId === id) t.objectStore('visits').delete(v.id);
+      for (const st of state.stamps) if (st.placeId === id) t.objectStore('stamps').delete(st.id);
     });
     state.places.delete(id);
     state.visits = state.visits.filter(v => v.placeId !== id);
+    state.stamps.filter(st => st.placeId === id).forEach(forgetUrls);
+    state.stamps = state.stamps.filter(st => st.placeId !== id);
     reindexVisits();
     toast('削除しました');
     go('/list');
   };
   showView('placeEdit', isNew ? '道の駅を追加' : '道の駅を編集', { back: true });
+}
+
+/* ---------- スタンプ写真 ---------- */
+// 写真は Canvas で描き直して JPEG にする。縮小と同時に EXIF（撮影位置など）も落ちる
+async function loadImage(file) {
+  if ('createImageBitmap' in window) {
+    try { return await createImageBitmap(file, { imageOrientation: 'from-image' }); } catch {}
+  }
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file), img = new Image();
+    img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('この画像は読み込めません（HEIC などはブラウザによって非対応）')); };
+    img.src = url;
+  });
+}
+function drawScaled(src, max, quality) {
+  const w = src.width, h = src.height, k = Math.min(1, max / Math.max(w, h));
+  const c = document.createElement('canvas');
+  c.width = Math.max(1, Math.round(w * k)); c.height = Math.max(1, Math.round(h * k));
+  const g = c.getContext('2d');
+  g.imageSmoothingQuality = 'high';
+  g.drawImage(src, 0, 0, c.width, c.height);
+  return new Promise((resolve, reject) => c.toBlob(b => b ? resolve({ blob: b, width: c.width, height: c.height }) : reject(new Error('画像の変換に失敗しました')), 'image/jpeg', quality));
+}
+async function processPhoto(file) {
+  const img = await loadImage(file);
+  try {
+    const photo = await drawScaled(img, PHOTO_MAX, 0.85);
+    const thumb = await drawScaled(img, THUMB_MAX, 0.8);
+    return { photo, thumb };
+  } finally { img.close?.(); }
+}
+
+// Blob → object URL は使い回し、写真を消したり差し替えたりしたら解放する
+const urlCache = new Map();
+function blobUrl(st, which) {
+  const k = st.id + ':' + which + ':' + (st.updatedAt || 0);
+  if (!urlCache.has(k)) urlCache.set(k, URL.createObjectURL(st[which]));
+  return urlCache.get(k);
+}
+function forgetUrls(st) {
+  for (const [k, u] of urlCache) if (k.startsWith(st.id + ':')) { URL.revokeObjectURL(u); urlCache.delete(k); }
+}
+
+function stampTiles(list, withCaption = true) {
+  return list.map(st => {
+    const p = st.placeId ? state.places.get(st.placeId) : null;
+    return `<button class="tile" data-stamp="${esc(st.id)}" aria-label="${esc(p?.name || KIND_LABEL[st.kind])} ${fmtDate(st.takenDate)}">
+      <img src="${blobUrl(st, 'thumb')}" alt="" loading="lazy" decoding="async">
+      ${withCaption ? `<span class="kind">${KIND_LABEL[st.kind] || ''}</span><span class="cap">${esc(p?.name || st.note || KIND_LABEL[st.kind])}</span>` : ''}
+    </button>`;
+  }).join('');
+}
+
+// ファイル選択はタップの処理の中で直接開く必要がある（iOS）。選ばれたら登録画面へ
+function pickPhoto(ctx) {
+  const inp = $('#photoInput');
+  inp.value = '';
+  inp.onchange = () => {
+    const file = inp.files && inp.files[0];
+    if (!file) return;
+    state.pending = { file, placeId: ctx.placeId || null, visitId: ctx.visitId || null };
+    go('/stamp-new');
+  };
+  inp.click();
+}
+
+/* スタンプ帳 */
+function renderStamps() {
+  const kinds = ['', ...Object.keys(KIND_LABEL)];
+  $('#kindChips').innerHTML = kinds.map(k => `<button class="chip" data-kind="${k}" aria-pressed="${state.stampKind === k}">${k ? KIND_LABEL[k] : 'すべて'}</button>`).join('');
+  $('#kindChips').onclick = e => {
+    const b = e.target.closest('[data-kind]'); if (!b) return;
+    state.stampKind = b.dataset.kind; ls.set('stampKind', state.stampKind); renderStamps();
+  };
+  const arr = state.stamps.filter(st => !state.stampKind || st.kind === state.stampKind)
+    .sort((a, b) => b.takenDate.localeCompare(a.takenDate) || b.createdAt - a.createdAt);
+  $('#stampCount').textContent = `${arr.length} 枚`;
+  $('#stampGrid').innerHTML = arr.length ? stampTiles(arr)
+    : `<p class="empty" style="grid-column:1/-1">${state.stamps.length ? 'この種別のスタンプはまだありません' : 'まだスタンプ写真がありません。<br>右上の「＋追加」か、道の駅の画面から撮影・選択できます。'}</p>`;
+}
+
+/* 登録・編集 */
+async function renderStampEdit(id) {
+  const el = $('#v-stamp');
+  let st, isNew = !id, processed = null;
+  if (isNew) {
+    const pd = state.pending;
+    if (!pd) { go('/stamps'); return; }
+    const place = pd.placeId ? state.places.get(pd.placeId) : null;
+    const visit = pd.visitId ? state.visits.find(v => v.id === pd.visitId) : null;
+    st = { id: null, placeId: pd.placeId, visitId: pd.visitId, kind: place?.type || 'memorial',
+           takenDate: visit?.visitedDate || today(), stampSpotNote: '', stampSpotLat: null, stampSpotLng: null, note: '' };
+    // 訪問を指定していなければ、同じ日の訪問に自動で紐づける
+    if (!st.visitId && st.placeId) st.visitId = state.visits.find(v => v.placeId === st.placeId && v.visitedDate === st.takenDate)?.id || null;
+  } else {
+    st = state.stamps.find(x => x.id === id);
+    if (!st) { go('/stamps'); return; }
+    st = { ...st };
+  }
+  showView('stamp', isNew ? 'スタンプ写真を登録' : 'スタンプ写真', { back: true });
+
+  const draw = () => {
+    const place = st.placeId ? state.places.get(st.placeId) : null;
+    const visits = st.placeId ? (state.byPlace.get(st.placeId)?.visits || []) : [];
+    const src = processed ? processed.url : st.photo ? blobUrl(st, 'photo') : null;
+    el.innerHTML = `
+      ${src ? `<img class="photo-view" src="${src}" alt="スタンプ写真">` : '<div class="photo-busy">写真を縮小しています…</div>'}
+      <div class="btn-row" style="margin-top:8px"><button class="btn ghost" id="replacePhoto">写真を${isNew ? '選び直す' : '差し替える'}</button></div>
+      <div class="field" style="margin-top:16px"><div class="label">種別</div>
+        <div class="chips" id="stKind">${Object.entries(KIND_LABEL).map(([k, l]) => `<button type="button" class="chip" data-kind="${k}" aria-pressed="${st.kind === k}">${l}</button>`).join('')}</div>
+      </div>
+      <div class="field"><div class="label">場所${st.kind === 'memorial' || st.kind === 'other' ? '（任意）' : ''}</div>
+        ${place ? `<div class="picked"><span class="nm">${esc(place.name)}<span class="note">　${esc(place.prefecture || '')}</span></span><button type="button" id="clearPlace">外す</button></div>`
+          : `<input type="search" id="placeQ" placeholder="道の駅の名前で探す" autocomplete="off" style="width:100%;min-height:48px;border:1px solid var(--line);border-radius:12px;background:var(--surface);padding:0 12px;font-size:16px">
+             <div class="picker-results" id="placeRes"></div>`}
+      </div>
+      ${place ? `<div class="field"><label for="stVisit">訪問記録との紐づけ</label>
+        <select id="stVisit"><option value="">紐づけない</option>${visits.map(v => `<option value="${esc(v.id)}"${v.id === st.visitId ? ' selected' : ''}>${fmtDate(v.visitedDate)}${v.stampObtained ? '' : '（スタンプ未取得の記録）'}</option>`).join('')}</select>
+        ${visits.length ? '' : '<div class="hint">この場所の訪問記録はまだありません。</div>'}</div>` : ''}
+      <div class="field"><label for="stDate">日付</label><input type="date" id="stDate" value="${esc(st.takenDate)}"></div>
+      <div class="field"><label for="stSpot">スタンプの設置場所</label>
+        <input type="text" id="stSpot" value="${esc(st.stampSpotNote)}" placeholder="例：館内の観光案内カウンター横"></div>
+      <div class="field"><label for="stNote">メモ</label><textarea id="stNote" placeholder="インクの色・押し方のコツ・記念スタンプの名前など">${esc(st.note)}</textarea></div>
+      <div class="btn-row"><button class="btn" id="saveStamp"${isNew && !processed ? ' disabled' : ''}>保存</button></div>
+      ${isNew ? '' : '<div class="btn-row"><button class="btn danger" id="delStamp">このスタンプ写真を削除</button></div>'}
+    `;
+    const keep = () => {   // 再描画の前に入力中の値を拾っておく
+      st.takenDate = $('#stDate', el).value || st.takenDate;
+      st.stampSpotNote = $('#stSpot', el).value; st.note = $('#stNote', el).value;
+      const vs = $('#stVisit', el); if (vs) st.visitId = vs.value || null;
+    };
+    $('#stKind', el).onclick = e => { const b = e.target.closest('[data-kind]'); if (!b) return; keep(); st.kind = b.dataset.kind; draw(); };
+    const cp = $('#clearPlace', el); if (cp) cp.onclick = () => { keep(); st.placeId = null; st.visitId = null; draw(); };
+    const q = $('#placeQ', el);
+    if (q) q.oninput = () => {
+      const n = normQ(q.value);
+      const hits = n ? [...state.places.values()].filter(p => (p._k ??= searchKey(p)).includes(n)).slice(0, 8) : [];
+      $('#placeRes', el).innerHTML = hits.map(p => `<button type="button" data-pick="${esc(p.id)}">${esc(p.name)}<span class="note">　${esc(p.address || p.prefecture || '')}</span></button>`).join('');
+    };
+    const pr = $('#placeRes', el);
+    if (pr) pr.onclick = e => {
+      const b = e.target.closest('[data-pick]'); if (!b) return;
+      keep(); st.placeId = b.dataset.pick;
+      const p = state.places.get(st.placeId);
+      if (st.kind === 'memorial' || st.kind === 'other') st.kind = p.type || st.kind;
+      st.visitId = state.visits.find(v => v.placeId === st.placeId && v.visitedDate === st.takenDate)?.id || null;
+      draw();
+    };
+    $('#replacePhoto', el).onclick = () => {
+      keep();
+      const inp = $('#photoInput'); inp.value = '';
+      inp.onchange = async () => { const f = inp.files && inp.files[0]; if (f) await runProcess(f); };
+      inp.click();
+    };
+    $('#saveStamp', el).onclick = save;
+    const del = $('#delStamp', el); if (del) del.onclick = remove;
+  };
+
+  const runProcess = async file => {
+    if (processed?.url) URL.revokeObjectURL(processed.url);
+    processed = null; draw();
+    try {
+      processed = await processPhoto(file);
+      processed.url = URL.createObjectURL(processed.photo.blob);   // プレビュー用（画面を離れたら不要）
+    } catch (e) {
+      toast(e.message || '画像を読み込めませんでした');
+      if (isNew && !st.photo) { state.pending = null; back(); return; }
+    }
+    draw();
+  };
+
+  const save = async () => {
+    st.takenDate = $('#stDate', el).value;
+    if (!st.takenDate) { toast('日付を入れてください'); return; }
+    st.stampSpotNote = $('#stSpot', el).value.trim(); st.note = $('#stNote', el).value.trim();
+    const vs = $('#stVisit', el); st.visitId = vs ? (vs.value || null) : null;
+    if (!st.placeId && (st.kind === 'michinoeki' || st.kind === 'station') && !confirm('場所が選ばれていません。このまま保存しますか？')) return;
+    const now = Date.now();
+    const old = isNew ? null : state.stamps.find(x => x.id === st.id);
+    const rec = {
+      ...st, id: st.id || uid(), createdAt: st.createdAt || now, updatedAt: now,
+      ...(processed ? { photo: processed.photo.blob, thumb: processed.thumb.blob, width: processed.photo.width, height: processed.photo.height } : {}),
+    };
+    // 写真を紐づけた訪問が「スタンプ未取得」のままなら取得済みにする
+    const visit = rec.visitId ? state.visits.find(v => v.id === rec.visitId) : null;
+    const fixVisit = visit && !visit.stampObtained;
+    await db.tx(['stamps', 'visits'], 'readwrite', t => {
+      t.objectStore('stamps').put(rec);
+      if (fixVisit) { visit.stampObtained = true; visit.updatedAt = now; t.objectStore('visits').put(visit); }
+    });
+    if (old) { forgetUrls(old); state.stamps[state.stamps.indexOf(old)] = rec; } else state.stamps.push(rec);
+    state.pending = null;
+    reindexVisits();
+    toast(fixVisit ? '保存しました（訪問記録を「スタンプ取得」にしました）' : '保存しました');
+    back();
+  };
+
+  const remove = async () => {
+    if (!confirm('このスタンプ写真を削除しますか？')) return;
+    await db.del('stamps', st.id);
+    const old = state.stamps.find(x => x.id === st.id);
+    if (old) forgetUrls(old);
+    state.stamps = state.stamps.filter(x => x.id !== st.id);
+    reindexVisits();
+    toast('削除しました');
+    back();
+  };
+
+  draw();
+  if (isNew) await runProcess(state.pending.file);
 }
 
 /* ---------- 訪問記録一覧 ---------- */
@@ -863,7 +1140,7 @@ async function renderSettings() {
       <p>道の駅：取り込み ${(meta?.count ?? 0).toLocaleString()} 駅（データ版 ${esc(meta?.value || '—')}）</p>
       <p>手動追加 ${manual}・編集済み ${edited}${missing ? `・最新の公式一覧に無い駅 ${missing}` : ''}</p>
       <p class="note">データを更新しても、手動追加・編集した駅は上書き・削除されません。</p>
-      <p>訪問記録：${state.visits.length} 件</p>
+      <p>訪問記録：${state.visits.length} 件・スタンプ写真：${state.stamps.length} 枚</p>
       <p>保存領域：${persisted === null ? '確認できません' : persisted ? '永続化済み（ブラウザに消されにくい状態）' : '未永続化（ホーム画面に追加すると消えにくくなります）'}${est ? `・使用量 約${(est.usage / 1048576).toFixed(1)}MB` : ''}</p>
     </div>
     <div class="card">
@@ -919,13 +1196,17 @@ async function boot() {
   document.addEventListener('click', e => {
     const item = e.target.closest('[data-id]');
     if (item && item.classList.contains('item')) { go('/place/' + encodeURIComponent(item.dataset.id)); return; }
+    const sb = e.target.closest('[data-stamp]');
+    if (sb) { go('/stamp/' + encodeURIComponent(sb.dataset.stamp)); return; }
     const vb = e.target.closest('[data-visit]');
     if (vb) go('/visit/' + encodeURIComponent(vb.dataset.visit));
   });
 
   await db.open();
   await loadRatingItems();
-  const [places, visits] = await Promise.all([db.all('places'), db.all('visits')]);
+  const [places, visits, stamps] = await Promise.all([db.all('places'), db.all('visits'), db.all('stamps')]);
+  state.stamps = stamps;
+  state.stampKind = ls.get('stampKind', '');
   places.forEach(p => state.places.set(p.id, p));
   state.visits = visits;
   reindexVisits();
