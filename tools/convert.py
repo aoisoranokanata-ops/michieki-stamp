@@ -7,7 +7,9 @@
 データの出どころ:
   - 駅名・読み・所在地・登録回: 国土交通省「道の駅」一覧（公共データ利用規約1.0 / CC BY 4.0互換）
   - 座標（優先）: OpenStreetMap（ODbL）。名前と市町村で突き合わせる
-  - 座標（代替）: 国土地理院 住所検索API による市町村の代表点（精度 'city'）
+  - 国土地理院 住所検索API の市町村代表点は、OSM 照合の距離判定（変換時の内部処理）にだけ使い、
+    出力には含めない（API の利用条件が公開されておらず再配布の可否が不明確なため）。
+    OSM で見つからない駅は座標なし（prec 'none'）で出力し、利用者がアプリ内で各自設定する
 
 外部ライブラリ不要（標準ライブラリのみ）。
 """
@@ -198,7 +200,7 @@ def main():
     cache = load_geocode_cache()
 
     station_norms = {norm(x["name"]) for x in stations}
-    places, used_ids, stats = [], set(), {"osm": 0, "city": 0, "none": 0}
+    places, used_ids, stats = [], set(), {"osm": 0, "none": 0}
     for s in stations:
         pref = s["prefecture"]
         assert pref in PREFS, pref
@@ -221,8 +223,6 @@ def main():
                 best = part[0]
         if best:
             lat, lng, prec = best["lat"], best["lng"], "osm"
-        elif center:
-            lat, lng, prec = center[0], center[1], "city"
         else:
             lat = lng = None
             prec = "none"
@@ -246,10 +246,14 @@ def main():
     doc = {
         "version": time.strftime("%Y-%m-%d") + "-" + digest,
         "count": len(places),
+        "license": "ODbL-1.0",
+        "licenseUrl": "https://opendatacommons.org/licenses/odbl/1-0/",
+        "attribution": "© OpenStreetMap contributors / 国土交通省「道の駅」一覧を加工して作成",
         "sources": [
-            "国土交通省「道の駅」一覧 (https://www.mlit.go.jp/road/Michi-no-Eki/list.html) を加工して作成",
-            "位置: © OpenStreetMap contributors (ODbL) / 国土地理院 住所検索API による市町村代表点",
+            "駅名・よみ・所在地・登録回・公式URL: 国土交通省「道の駅」一覧 (https://www.mlit.go.jp/road/Michi-no-Eki/list.html) を加工して作成（公共データ利用規約 第1.0版）",
+            "位置: © OpenStreetMap contributors (https://www.openstreetmap.org/copyright) ODbL 1.0",
         ],
+        "notice": "詳細は data/DATA_LICENSE.md を参照。国土交通省が作成したものではありません。",
         "prefs": PREFS,
         "places": places,
     }

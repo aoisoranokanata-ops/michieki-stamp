@@ -27,19 +27,22 @@
 
 ## データの出典と利用条件
 
+同梱の `data/michinoeki.json` は **ODbL 1.0** で提供します（詳細は [data/DATA_LICENSE.md](data/DATA_LICENSE.md)）。
+
 | データ | 出典 | 利用条件 |
 |---|---|---|
-| 道の駅の駅名・よみ・所在地・登録回 | [国土交通省「道の駅」一覧](https://www.mlit.go.jp/road/Michi-no-Eki/list.html) を加工して作成 | 国土交通省ウェブサイト利用規約（公共データ利用規約 第1.0版、CC BY 4.0 互換） |
-| 道の駅の位置（主） | © [OpenStreetMap](https://www.openstreetmap.org/copyright) contributors | ODbL 1.0 |
-| 道の駅の位置（OSM に無い駅） | 国土地理院 住所検索 による市町村の代表点 | 公開された利用規約なし（下記） |
+| 駅名・よみ・所在地・登録回・登録年月・公式URL | [国土交通省「道の駅」一覧](https://www.mlit.go.jp/road/Michi-no-Eki/list.html) を加工して作成 | 公共データ利用規約 第1.0版（CC BY 4.0 互換） |
+| 位置（1,128 駅） | © [OpenStreetMap](https://www.openstreetmap.org/copyright) contributors | ODbL 1.0 |
+| 位置（残り 106 駅） | 同梱しない。アプリ内で利用者が各自設定 | — |
 
-- 所在地は市町村までです。OSM で見つからなかった駅の位置は市町村の代表点（概略）で、実際の場所とずれます。
-- 住所からの座標取得には国土地理院の住所検索（`msearch.gsi.go.jp`）を使います。CORS で直接呼べますが、
-  公式な利用規約の掲載は無く、試験運用扱いで予告なく止まる可能性があります。ボタンを押したときだけ、入力した住所のみを送信します。
+- 所在地は市町村までです。
+- 「住所から座標を取得」は国土地理院の住所検索（`msearch.gsi.go.jp`）を使います。ボタン1回につき1リクエストで、
+  自動の一括取得はしません。公式な利用規約の掲載が無く試験運用扱いのため、取得結果は同梱データに含めていません。
+  使えない場合は緯度経度を直接入力できます（地図ピン・現在地による設定はフェーズ3で追加）。
 - このアプリおよび加工データは、国土交通省・国土地理院が作成したものではありません。
-- `data/michinoeki.json` は `tools/convert.py` で生成しています（`python tools/convert.py --refresh` で取り直し）。
-  このファイルの位置情報部分は ODbL に従います。
+- `data/michinoeki.json` は `python tools/convert.py --refresh` で作り直せます。
 
 ## ライセンス
 
-アプリのコードは [MIT License](LICENSE)。データは上表の各利用条件に従います。
+- **コード**（`index.html`・`tools/` など）：[MIT License](LICENSE)
+- **データ**（`data/michinoeki.json`）：ODbL 1.0 ほか、[data/DATA_LICENSE.md](data/DATA_LICENSE.md) に記載の各条件

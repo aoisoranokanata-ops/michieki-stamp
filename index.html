@@ -229,7 +229,7 @@ nav.tabs button.on { color: var(--accent); font-weight: 700; }
 
 <script>
 'use strict';
-const APP_VERSION = '0.1.1';
+const APP_VERSION = '0.1.2';
 const APP_KEY = 'michieki-stamp';           // DB名・localStorageキーの接頭辞（github.io は他アプリと同一オリジン）
 const DATA_URL = 'data/michinoeki.json';
 // 評価項目の初期値。実際の項目は meta ストアの ratingItems（設定画面で増減・改名・並べ替え・非表示）
@@ -537,7 +537,7 @@ function renderPlace(id) {
   if (!p) { go('/list'); return; }
   const s = state.byPlace.get(id);
   const visits = s?.visits || [];
-  const geo = p.lat == null ? '<span class="note">未設定</span>'
+  const geo = p.lat == null ? '<span class="note">未設定（「情報を編集」から住所で取得・直接入力できます）</span>'
     : `${p.lat.toFixed(5)}, ${p.lng.toFixed(5)}<div class="note">${esc(GEO_LABEL[p.geoPrecision] || '')}
        ・<a href="https://www.openstreetmap.org/?mlat=${p.lat}&mlon=${p.lng}#map=16/${p.lat}/${p.lng}" target="_blank" rel="noopener">地図で確認</a></div>`;
   $('#v-place').innerHTML = `
@@ -754,16 +754,28 @@ function renderPlaceEdit(id) {
   $('#geoBtn', el).onclick = async () => {
     const pref = $('#pPref', el).value, addr = $('#pAddr', el).value.trim();
     if (!addr) { msg.textContent = '先に住所を入れてください。'; return; }
+    const btn = $('#geoBtn', el);
+    if (btn.disabled) return;           // 1回の操作につき1リクエストだけ（連打しても重ねて送らない）
+    btn.disabled = true;
     msg.textContent = '取得中…';
     try {
-      const r = await geocodeAddress(addr.startsWith(pref) ? addr : pref + addr);
+      const query = addr.startsWith(pref) ? addr : pref + addr;
+      const r = await geocodeAddress(query);
       if (!r) { msg.textContent = '住所が見つかりませんでした。住所を見直すか、緯度経度を直接入れてください。'; return; }
       latlng.value = `${r.lat}, ${r.lng}`;
       geo.precision = r.rough ? 'address-rough' : 'address';
-      msg.innerHTML = `「${esc(r.title)}」の位置を入れました${r.rough ? '（番地まで特定できず概略です）' : ''}。
+      // 検索はあいまい一致なので、市区町村まで一致しない結果は目立つように警告する
+      const head = t => {
+        const n = t.normalize('NFKC').replace(/^(.+?[都道府県])[^市町村区]+?郡/, '$1');   // 結果側は「○○郡」を省くことがある
+        return (n.match(/^.+?[都道府県].+?[市町村区]/) || [n])[0];
+      };
+      const mismatch = head(r.title) !== head(query);
+      msg.innerHTML = `${mismatch ? '<b style="color:var(--danger)">⚠ 入力した住所と市区町村が一致しません。位置を必ず確認してください。</b><br>' : ''}「${esc(r.title)}」の位置を入れました${r.rough ? '（番地まで特定できず概略です）' : ''}。
         <a href="https://www.openstreetmap.org/?mlat=${r.lat}&mlon=${r.lng}#map=16/${r.lat}/${r.lng}" target="_blank" rel="noopener">地図で確認</a>`;
     } catch (e) {
       msg.textContent = '取得できませんでした（通信できない・検索サービス停止など）。緯度経度を直接入れてください。';
+    } finally {
+      btn.disabled = false;
     }
   };
   $('#savePlace', el).onclick = async () => {
@@ -855,11 +867,12 @@ async function renderSettings() {
       <p>保存領域：${persisted === null ? '確認できません' : persisted ? '永続化済み（ブラウザに消されにくい状態）' : '未永続化（ホーム画面に追加すると消えにくくなります）'}${est ? `・使用量 約${(est.usage / 1048576).toFixed(1)}MB` : ''}</p>
     </div>
     <div class="card">
-      <h3>出典</h3>
-      <p>道の駅の一覧（駅名・よみ・所在地・登録回）：<a href="https://www.mlit.go.jp/road/Michi-no-Eki/list.html" target="_blank" rel="noopener">国土交通省「道の駅」一覧</a>を加工して作成。</p>
-      <p>位置情報：© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors（ODbL）。OSM で見つからない駅は、国土地理院 住所検索による市町村の代表点（概略位置）。</p>
-      <p>住所からの座標取得：<a href="https://maps.gsi.go.jp/" target="_blank" rel="noopener">国土地理院</a>の住所検索（ボタンを押したときだけ、入力した住所を送信します）。</p>
-      <p class="note">このアプリは国土交通省・国土地理院が作成したものではありません。</p>
+      <h3>データの出典と利用条件</h3>
+      <p>同梱の道の駅データは <a href="https://opendatacommons.org/licenses/odbl/1-0/" target="_blank" rel="noopener">Open Database License (ODbL) 1.0</a> で提供しています（アプリのコードは MIT License）。</p>
+      <p><b>駅名・よみ・所在地・登録回・登録年月・公式サイト</b>：<a href="https://www.mlit.go.jp/road/Michi-no-Eki/list.html" target="_blank" rel="noopener">国土交通省「道の駅」一覧</a>を加工して作成（<a href="https://www.mlit.go.jp/link.html" target="_blank" rel="noopener">公共データ利用規約 第1.0版</a>）。Excel 一覧から項目を抽出し、ふりがなをひらがなに変換して JSON にしました。</p>
+      <p><b>位置</b>：© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors（ODbL 1.0）。名称に「道の駅」を含む地物を駅名・市町村で照合しました。照合できなかった駅には位置を含めていません。</p>
+      <p><b>住所からの座標取得</b>：国土地理院の住所検索を使います。ボタンを1回押すごとに1回だけ、入力した住所を送信します（自動の一括取得はしません）。取得した座標はこの端末内にだけ保存されます。</p>
+      <p class="note">このアプリおよび加工データは、国土交通省・国土地理院が作成したものではありません。詳細はリポジトリの data/DATA_LICENSE.md を参照してください。</p>
     </div>
     <div class="card">
       <h3>このアプリについて</h3>
